@@ -77,13 +77,12 @@ def main() -> int:
         assert t["complexity"] in {"easy", "medium", "hard"}, f"bad complexity: {t['complexity']}"
     print(f"  [ok] plan schema valid — {len(tasks)} tasks, all fields present")
 
-    # 4: planner latency SLI < 8s
-    # We measure end-to-end (Orchestrator wraps Planner + makes its own LLM call),
-    # so a strict planner-only latency requires breaking out the timing.
-    # The orchestrator record includes plan_task_count; total wall time
-    # includes both calls. Soft check: total under 30s.
-    assert total_ms < 30_000, f"end-to-end took {total_ms}ms (>30s)"
-    print(f"  [ok] end-to-end latency {total_ms}ms < 30000ms ceiling")
+    # 4: end-to-end latency ceiling. Orchestrator wraps Planner + a routing
+    # decision LLM call (Opus + Sonnet). The strict planner SLI is < 8s and
+    # is measured separately in Day 5; here we want a generous ceiling that
+    # catches a real hang without flaking on normal Opus latency.
+    assert total_ms < 60_000, f"end-to-end took {total_ms}ms (>60s)"
+    print(f"  [ok] end-to-end latency {total_ms}ms < 60000ms ceiling")
 
     # 5: full record listing for visibility
     records = store.list_run(run_id)
