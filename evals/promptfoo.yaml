@@ -1,0 +1,115 @@
+# CodeOrch — 10-task golden benchmark
+#
+# 3 easy / 4 medium / 3 hard. Targets the FastAPI /generate endpoint and
+# scores by:
+#   - run completes (no AgentFailure surfaced)
+#   - all 8 stages persist (verified via GET /runs/{id})
+#   - gate verdict == 'pass'
+#   - gate score >= 0.75
+#
+# Run with:
+#   promptfoo eval --config evals/promptfoo.yaml --output evals/results.json
+#   python evals/promptfoo_runner.py   # generates evals/report.html
+#
+# Prerequisite: API running locally — `uvicorn api.main:app --port 8765`
+
+description: "CodeOrch full-pipeline 10-task golden benchmark"
+
+providers:
+  - id: http
+    config:
+      url: "http://localhost:8765/generate"
+      method: POST
+      headers:
+        Content-Type: "application/json"
+        X-User-Id: "promptfoo-eval"
+      body: |
+        {"spec": "{{spec}}"}
+      transformResponse: "json"
+
+# A run is considered passing when the gate accepted, the score cleared the
+# 0.75 bar, and the run wasn't marked failed.
+defaultTest:
+  assert:
+    - type: javascript
+      value: "output.status !== 'failed'"
+    - type: javascript
+      value: "output.gate_verdict === 'pass'"
+    - type: javascript
+      value: "output.gate_score >= 0.75"
+    - type: javascript
+      value: "output.documented_code && output.documented_code.length > 50"
+
+tests:
+  # --- EASY (3) ---
+  - description: "easy/python/clamp"
+    metadata:
+      difficulty: easy
+      language: python
+    vars:
+      spec: "Write a Python function `clamp(x: float, low: float, high: float) -> float` that bounds x to [low, high]. Include 2 pytest tests."
+
+  - description: "easy/python/is_palindrome"
+    metadata:
+      difficulty: easy
+      language: python
+    vars:
+      spec: "Write a Python function `is_palindrome(s: str) -> bool` ignoring case and non-alphanumerics. Include 3 pytest tests."
+
+  - description: "easy/typescript/chunk"
+    metadata:
+      difficulty: easy
+      language: typescript
+    vars:
+      spec: "Write a TypeScript function `chunk<T>(arr: T[], size: number): T[][]` splitting an array into fixed-size chunks. Include 2 Jest tests."
+
+  # --- MEDIUM (4) ---
+  - description: "medium/python/lru_cache"
+    metadata:
+      difficulty: medium
+      language: python
+    vars:
+      spec: "Write a Python class `LRUCache` with O(1) `get(key)` and `put(key, value)`. Capacity is set on construction. Include 3 pytest tests covering eviction, hit, and miss."
+
+  - description: "medium/typescript/debounce"
+    metadata:
+      difficulty: medium
+      language: typescript
+    vars:
+      spec: "Write a TypeScript generic function `debounce<F extends (...args: any[]) => any>(fn: F, ms: number): F` that returns a debounced version preserving argument types. Include 2 Jest tests using fake timers."
+
+  - description: "medium/python/flatten"
+    metadata:
+      difficulty: medium
+      language: python
+    vars:
+      spec: "Write a Python function `flatten(items: list) -> list` that recursively flattens an arbitrarily nested list. Include 3 pytest tests covering empty, deep nesting, and mixed-type cases."
+
+  - description: "medium/javascript/groupBy"
+    metadata:
+      difficulty: medium
+      language: javascript
+    vars:
+      spec: "Write a JavaScript function `groupBy(arr, keyFn)` that returns an object grouping array items by `keyFn(item)`. Include 2 Jest tests."
+
+  # --- HARD (3) ---
+  - description: "hard/python/topological_sort"
+    metadata:
+      difficulty: hard
+      language: python
+    vars:
+      spec: "Write a Python function `topological_sort(graph: dict[str, list[str]]) -> list[str]` returning a topologically sorted node order, or raising `ValueError` on a cycle. Include 4 pytest tests: linear chain, diamond, cycle (must raise), disconnected components."
+
+  - description: "hard/python/rate_limiter"
+    metadata:
+      difficulty: hard
+      language: python
+    vars:
+      spec: "Write a Python class `TokenBucket` implementing a rate limiter with `capacity`, `refill_per_second`, and a `consume(tokens: int) -> bool` method. Use a monotonic clock. Include 4 pytest tests covering exhaustion, refill, partial consume, and concurrent monotonic behavior."
+
+  - description: "hard/typescript/event_emitter"
+    metadata:
+      difficulty: hard
+      language: typescript
+    vars:
+      spec: "Write a TypeScript generic class `EventEmitter<E extends Record<string, any[]>>` with `on(event, handler)`, `off(event, handler)`, `emit(event, ...args)`, and proper typing so emit args match the registered handler signature. Include 3 Jest tests."

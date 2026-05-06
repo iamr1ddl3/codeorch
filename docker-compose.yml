@@ -1,0 +1,21 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg15
+    container_name: codeorch-postgres
+    environment:
+      POSTGRES_DB: codeorch
+      POSTGRES_USER: codeorch
+      POSTGRES_PASSWORD: codeorch_dev
+    ports:
+      - "5433:5432"
+    volumes:
+      - codeorch-pgdata:/var/lib/postgresql/data
+      - ./scripts/init_schema.sql:/docker-entrypoint-initdb.d/01_init_schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U codeorch -d codeorch"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+volumes:
+  codeorch-pgdata:
