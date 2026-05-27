@@ -131,6 +131,33 @@ python routerbench/run_benchmark.py     # replays 13 runs × 3 variants → resu
 python routerbench/generate_report.py   # renders routerbench_report.html
 ```
 
+## Stack
+
+- **Language:** Python 3.11+
+- **Agents:** Anthropic Claude (Opus 4.7 / Sonnet 4.6 / Haiku 4.5) via official SDK; async via `asyncio.gather` for parallel Coder + Tester.
+- **Context store:** PostgreSQL + pgvector (HNSW index). Schema documented in `store/`.
+- **Observability:** Langfuse (self-hosted or cloud), one trace per pipeline run with per-stage spans.
+- **Evals:** Promptfoo (golden dataset, JSON-Schema assertions), in-tree A/B harness for RouterBench.
+- **Dashboard:** Streamlit, 8-SLI live view from Langfuse + Postgres.
+- **Dev infra:** docker-compose for Postgres + pgvector + Langfuse local stack.
+
+## Scope / Known limits
+
+**In scope.** Stateless multi-agent code generation pipeline over an externalized context store, with quality gating, multi-model routing, observability, and reproducible benchmarks. End-to-end working demo with verifiable SLIs.
+
+**Known limits.**
+
+- Single-language target (Python code generation). Multi-language would need stage-specific Tester adaptations.
+- RouterBench n=13 baseline runs — small sample, results directionally robust but worth re-running at n≥50 before treating as definitive.
+- No production-grade auth on the dashboard (Streamlit default). Add reverse-proxy auth before exposing publicly.
+- Quality gate is LLM-as-judge; for high-stakes correctness use unit-test verification (already wired in Tester) as the primary signal and the gate as triage.
+- Self-correction loop is one-shot — gate failure triggers one retry, not iterative refinement. Iterative loop is a roadmap item.
+
+## Further reading
+
+- `DESIGN.md` — full architecture decisions with rationale.
+- `ARCHITECTURE.md` — Mermaid diagrams of agent + store topology.
+
 ## License
 
 MIT
