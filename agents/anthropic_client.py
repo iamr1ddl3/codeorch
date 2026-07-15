@@ -33,6 +33,112 @@ _CLIENT: Anthropic | None = None
 _ACLIENT: AsyncAnthropic | None = None
 
 
+# ---------------------------------------------------------------------------
+# Fake LLM backend (no API). Enabled with CODEORCH_FAKE_LLM=1.
+#
+# Lets the full pipeline run end-to-end against real Postgres + Langfuse with
+# zero Anthropic spend — useful for wiring/store/observability smoke tests and
+# offline demos. Canned per-stage JSON is dispatched off the system prompt
+# (every agent's system starts "You are the <X> agent"). Returns the SAME
+# ModelCall shape real calls return, so downstream parsing/validation is
+# exercised unchanged. NOT a substitute for model-quality testing.
+# ---------------------------------------------------------------------------
+
+_FAKE_CODE = (
+    "def is_even(n: int) -> bool:\n"
+    "    return n % 2 == 0\n"
+)
+_FAKE_TESTS = (
+    "from is_even import is_even\n\n"
+    "def test_even():\n"
+    "    assert is_even(4) is True\n\n"
+    "def test_odd():\n"
+    "    assert is_even(3) is False\n"
+)
+_FAKE_FINAL = f"# === is_even.py ===\n{_FAKE_CODE}"
+
+
+def _fake_payload(system: str) -> dict[str, Any]:
+    """Pick canned output by matching the agent's system prompt. The gate
+    returns a passing score so the full review+doc path runs."""
+    # Match on the "You are the <role>" anchor — agent bodies mention OTHER
+    # agents' names (e.g. Reviewer's prompt references the Quality Gate), so a
+    # plain substring scan misfires. Anchor to the role declaration.
+    s = system.lower()
+    if "you are the reviewer" in s:
+        return {
+            "approved": True,
+            "notes": ["gate-approved; reviewer concurs"],
+            "final_code": _FAKE_FINAL,
+        }
+    if "you are the documenter" in s:
+        return {
+            "documented_code": (
+                '# === is_even.py ===\n'
+                'def is_even(n: int) -> bool:\n'
+                '    """Return True if n is even."""\n'
+                '    return n % 2 == 0\n'
+            ),
+            "summary": "Returns whether an integer is even.",
+        }
+    if "you are the quality gate" in s:
+        return {
+            "score": 0.90,
+            "verdict": "pass",
+            "routing": "reviewer",
+            "issues": [],
+        }
+    if "planner agent" in s:
+        return {
+            "tasks": [{
+                "id": "T1",
+                "description": "Implement is_even(n) returning n % 2 == 0",
+                "language": "python",
+                "complexity": "easy",
+                "acceptance_criterion": "is_even(4) is True and is_even(3) is False",
+            }],
+            "acceptance_criteria": ["is_even returns True for even, False for odd"],
+        }
+    if "coder agent" in s:
+        return {
+            "files": {"is_even.py": _FAKE_CODE},
+            "language": "python",
+            "dependencies": [],
+            "notes": "fake-llm canned implementation",
+        }
+    if "tester agent" in s:
+        return {
+            "test_files": {"test_is_even.py": _FAKE_TESTS},
+            "framework": "pytest",
+            "coverage_targets": ["is_even even input", "is_even odd input"],
+        }
+    if "orchestrator" in s:
+        return {
+            "summary": "Generated is_even with 2 passing tests; gate passed.",
+            "verdict": "pass",
+            "next_step_for_user": "Use the documented code as-is.",
+        }
+    # Unknown stage — return empty dict; the agent's own validator will raise,
+    # which is the correct signal that a new stage needs a fake payload.
+    return {}
+
+
+def _fake_enabled() -> bool:
+    return os.environ.get("CODEORCH_FAKE_LLM") == "1"
+
+
+def _fake_call(model: str, system: str) -> "ModelCall":
+    parsed = _fake_payload(system)
+    text = json.dumps(parsed)
+    return ModelCall(
+        text=text,
+        parsed=parsed,
+        usage={"input": 0, "output": 0, "total": 0},
+        model=f"fake:{model}",
+        latency_ms=0,
+    )
+
+
 def _client() -> Anthropic:
     global _CLIENT
     if _CLIENT is None:
@@ -82,6 +188,8 @@ def call_model(
     (deprecated for that model). Sonnet/Haiku still accept it but the default
     server-side temperature is what we want here.
     """
+    if _fake_enabled():
+        return _fake_call(model, system)
     started_at = time.monotonic()
     last_exc: Exception | None = None
     for attempt in (1, 2):
@@ -130,6 +238,8 @@ async def acall_model(
     Coder + Tester parallel fan-out (Day 5)."""
     import asyncio
 
+    if _fake_enabled():
+        return _fake_call(model, system)
     started_at = time.monotonic()
     last_exc: Exception | None = None
     for attempt in (1, 2):
