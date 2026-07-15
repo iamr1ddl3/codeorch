@@ -59,17 +59,47 @@ class Coder(BaseAgent):
         if not plan or not plan.get("tasks"):
             raise ValueError("Coder: missing or empty 'plan.tasks' in inputs")
 
+        # Self-correction: on a retry the orchestrator passes the previous
+        # attempt + the gate's issues. First pass leaves these absent and the
+        # prompt is plan-only (unchanged). CODER_SYSTEM stays fixed — the stable
+        # output contract belongs in the system turn; per-attempt critique goes
+        # in the user turn.
+        previous_attempt = inputs.get("previous_attempt")
+        gate_issues = inputs.get("gate_issues") or []
+        retry_attempt = inputs.get("retry_attempt", 0)
+        is_retry = bool(previous_attempt) and retry_attempt > 0
+
+        if is_retry:
+            prev_files = (
+                previous_attempt.get("files", {})
+                if isinstance(previous_attempt, dict)
+                else {}
+            )
+            issues_block = "\n".join(f"- {i}" for i in gate_issues) or "- (none reported)"
+            user = (
+                f"Plan:\n{json.dumps(plan, indent=2)}\n\n"
+                f"This is RETRY attempt {retry_attempt}. Your previous output scored "
+                f"below the quality bar. REVISE the previous files to fix the issues "
+                f"below — do NOT start over.\n\n"
+                f"Previous attempt files:\n{json.dumps(prev_files, indent=2)}\n\n"
+                f"Quality gate issues to fix:\n{issues_block}\n\n"
+                f"Return the SAME JSON schema (files/language/dependencies/notes) "
+                f"with the issues resolved."
+            )
+        else:
+            user = f"Plan:\n{json.dumps(plan, indent=2)}"
+
         with trace_agent(
             agent_name=f"{self.agent_name}.llm",
             stage=self.stage,
             model=self.model,
-            input_data={"task_count": len(plan["tasks"])},
+            input_data={"task_count": len(plan["tasks"]), "retry_attempt": retry_attempt},
             as_type="generation",
         ) as gen:
             call = await acall_model(
                 model=self.model,
                 system=CODER_SYSTEM,
-                user=f"Plan:\n{json.dumps(plan, indent=2)}",
+                user=user,
                 max_tokens=4096,
             )
             gen.update(

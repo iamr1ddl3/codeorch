@@ -6,10 +6,12 @@ Day 5 scope: full Planner -> asyncio.gather(Coder, Tester) -> Quality Gate
 
 Self-correction loop (per Dhruv's vocabulary):
   - Gate verdict='pass'     -> hand off to Reviewer (Day 6) — for now, return.
-  - Gate verdict='retry'    -> re-run Coder with the gate's issues injected
-                                into context. Tester output is reused (per
-                                DESIGN.md "On retry: re-runs Coder only").
-                                Max 2 retries.
+  - Gate verdict='retry'    -> re-run Coder with the best attempt + the gate's
+                                issues injected into context. Tester output is
+                                reused (per DESIGN.md "On retry: re-runs Coder
+                                only"). Adaptive: stops early when a retry fails
+                                to improve the score; keeps the best-scoring
+                                attempt. MAX_RETRIES=2 is the hard ceiling.
   - Gate verdict='escalate' -> stop the run, surface escalation_reason.
 
 This is "self-correction loops" + "failure isolation — no cascading
@@ -87,46 +89,69 @@ class Orchestrator(BaseAgent):
         gate_input = {"plan": plan, "code": code, "tests": tests}
         gate_out = self.gate.run(run_id, gate_input)
 
+        # Adaptive self-correction loop with best-attempt retention. We track
+        # the best-scoring attempt and feed IT back to the Coder (not blindly
+        # the last attempt), and stop early when a retry fails to improve the
+        # score — plateau or regression. MAX_RETRIES stays the hard ceiling.
+        # The Coder consumes previous_attempt + gate_issues (see coder.py); a
+        # consistent verdict-only gate keeps the score trajectory comparable.
         retries_used = 0
+        best_score = gate_out.get("score") or 0.0
+        best_code = code
+        best_gate = gate_out
+        prior_score = best_score
+
         while gate_out.get("verdict") == "retry" and retries_used < MAX_RETRIES:
             retries_used += 1
-            # Self-correction loop: re-run Coder ONLY (Tester output is reused
-            # per DESIGN.md). Inject the gate's issues into the Coder's context
-            # so the model knows what to fix.
+            # Re-run Coder ONLY (Tester output is reused per DESIGN.md), feeding
+            # the BEST attempt so far + its gate issues so the model never
+            # regresses from a worse intermediate.
             retry_inputs = {
                 "plan": plan,
-                "previous_attempt": code,
-                "gate_issues": gate_out.get("issues", []),
+                "previous_attempt": best_code,
+                "gate_issues": best_gate.get("issues", []),
                 "retry_attempt": retries_used,
             }
             try:
                 code = asyncio.run(self.coder.arun(run_id, retry_inputs))
             except AgentFailure as exc:
-                # Failed retry counts as a retry — break out and let gate
-                # escalate on the partial-state record.
+                # Failed retry counts as a retry — return the best attempt so
+                # far (not the failed partial). The failure row is persisted by
+                # base_agent for postmortem.
                 return self._summarize(
-                    run_id, spec, plan, code, tests, gate_out,
+                    run_id, spec, plan, best_code, tests, best_gate,
                     retries_used, status=f"retry_failed: {exc}",
                 )
             gate_out = self.gate.run(
                 run_id,
                 {"plan": plan, "code": code, "tests": tests},
             )
+            new_score = gate_out.get("score") or 0.0
+
+            # Regression guard: only adopt the attempt if it beats the best.
+            if new_score > best_score:
+                best_score, best_code, best_gate = new_score, code, gate_out
+            # Adaptive stop: no strict improvement over the prior attempt
+            # (tie or regression) → stop iterating.
+            if new_score <= prior_score:
+                break
+            prior_score = new_score
 
         # 4. Reviewer (verdict='pass' only). Skip on retry-exhausted/escalated.
+        # Uses the BEST attempt, not necessarily the last one produced.
         review_out: dict[str, Any] | None = None
         doc_out: dict[str, Any] | None = None
-        if gate_out.get("verdict") == "pass":
+        if best_gate.get("verdict") == "pass":
             try:
                 review_out = self.reviewer.run(
-                    run_id, {"code": code, "tests": tests, "gate": gate_out}
+                    run_id, {"code": best_code, "tests": tests, "gate": best_gate}
                 )
             except AgentFailure:
                 # Per DESIGN.md: pass-through with approved=false. base_agent
                 # already persisted the failure row. Continue so Documenter
                 # gets a chance — it can still document the unreviewed code.
                 review_out = {"approved": False, "notes": ["review failed"],
-                              "final_code": _flatten_code_files(code)}
+                              "final_code": _flatten_code_files(best_code)}
 
             # 5. Documenter — non-blocking on failure (per DESIGN.md). If it
             # raises, the orchestrator returns review_out['final_code'] as-is.
@@ -139,7 +164,7 @@ class Orchestrator(BaseAgent):
                     doc_out = None  # explicit: failure record already persisted
 
         return self._summarize(
-            run_id, spec, plan, code, tests, gate_out, retries_used,
+            run_id, spec, plan, best_code, tests, best_gate, retries_used,
             review_out=review_out, doc_out=doc_out,
         )
 
