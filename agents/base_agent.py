@@ -13,7 +13,7 @@ The outer trace is opened by the API or smoke test via trace_run().
 from __future__ import annotations
 
 import time
-from abc import ABC, abstractmethod
+from abc import ABC
 from typing import Any
 from uuid import UUID
 
@@ -33,6 +33,72 @@ class BaseAgent(ABC):
 
     def __init__(self, store: ContextStore | None = None):
         self.store = store or ContextStore()
+
+    def _generate(
+        self,
+        *,
+        system: str,
+        user: str,
+        max_tokens: int,
+        input_data: dict[str, Any],
+        agent_suffix: str = "llm",
+    ) -> Any:
+        """Open a generation child-span, call the model, record usage, and
+        return the ModelCall. Shared body for every agent's execute() — the
+        only per-agent variation is the prompt and the post-call validation.
+
+        Imported lazily to avoid a circular import (anthropic_client imports
+        nothing from agents, but agents subclass this before the client is
+        importable at module load in some orderings)."""
+        from agents.anthropic_client import call_model
+
+        with trace_agent(
+            agent_name=f"{self.agent_name}.{agent_suffix}",
+            stage=self.stage,
+            model=self.model,
+            input_data=input_data,
+            as_type="generation",
+        ) as gen:
+            call = call_model(
+                model=self.model, system=system, user=user, max_tokens=max_tokens
+            )
+            gen.update(
+                output=call.parsed,
+                model=call.model,
+                usage_details=call.usage,
+                metadata={"latency_ms": call.latency_ms},
+            )
+        return call
+
+    async def _agenerate(
+        self,
+        *,
+        system: str,
+        user: str,
+        max_tokens: int,
+        input_data: dict[str, Any],
+        agent_suffix: str = "llm",
+    ) -> Any:
+        """Async twin of _generate() — for aexecute() agents (Coder, Tester)."""
+        from agents.anthropic_client import acall_model
+
+        with trace_agent(
+            agent_name=f"{self.agent_name}.{agent_suffix}",
+            stage=self.stage,
+            model=self.model,
+            input_data=input_data,
+            as_type="generation",
+        ) as gen:
+            call = await acall_model(
+                model=self.model, system=system, user=user, max_tokens=max_tokens
+            )
+            gen.update(
+                output=call.parsed,
+                model=call.model,
+                usage_details=call.usage,
+                metadata={"latency_ms": call.latency_ms},
+            )
+        return call
 
     def execute(self, run_id: UUID, inputs: dict[str, Any]) -> dict[str, Any]:
         """Sync execute. Override in sync agents (Orchestrator, Planner)."""
@@ -66,16 +132,7 @@ class BaseAgent(ABC):
         ) as span:
             try:
                 output = await self.aexecute(run_id, inputs)
-                latency_ms = int((time.monotonic() - started_at) * 1000)
-                self.store.write_stage(
-                    run_id=run_id,
-                    stage=self.stage,
-                    agent_name=self.agent_name,
-                    output_json=output,
-                    status="success",
-                )
-                span.update(output=output, metadata={"latency_ms": latency_ms})
-                return output
+                return self._finish_success(run_id, output, started_at, span)
             except Exception as exc:
                 self._persist_failure(run_id, exc, started_at, span)
                 raise AgentFailure(str(exc)) from exc
@@ -92,19 +149,24 @@ class BaseAgent(ABC):
         ) as span:
             try:
                 output = self.execute(run_id, inputs)
-                latency_ms = int((time.monotonic() - started_at) * 1000)
-                self.store.write_stage(
-                    run_id=run_id,
-                    stage=self.stage,
-                    agent_name=self.agent_name,
-                    output_json=output,
-                    status="success",
-                )
-                span.update(output=output, metadata={"latency_ms": latency_ms})
-                return output
+                return self._finish_success(run_id, output, started_at, span)
             except Exception as exc:
                 self._persist_failure(run_id, exc, started_at, span)
                 raise AgentFailure(str(exc)) from exc
+
+    def _finish_success(
+        self, run_id: UUID, output: dict[str, Any], started_at: float, span: Any
+    ) -> dict[str, Any]:
+        latency_ms = int((time.monotonic() - started_at) * 1000)
+        self.store.write_stage(
+            run_id=run_id,
+            stage=self.stage,
+            agent_name=self.agent_name,
+            output_json=output,
+            status="success",
+        )
+        span.update(output=output, metadata={"latency_ms": latency_ms})
+        return output
 
     def _persist_failure(
         self, run_id: UUID, exc: Exception, started_at: float, span: Any

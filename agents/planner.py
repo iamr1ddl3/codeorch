@@ -19,10 +19,8 @@ from __future__ import annotations
 from typing import Any
 from uuid import UUID
 
-from agents.anthropic_client import call_model
 from agents.base_agent import BaseAgent
 from agents.models import ROUTING
-from observability.langfuse import trace_agent
 
 PLANNER_SYSTEM = """You are the Planner agent in a multi-agent code generation pipeline.
 
@@ -68,27 +66,12 @@ class Planner(BaseAgent):
         if not spec:
             raise ValueError("Planner: missing 'spec' in inputs")
 
-        # base_agent opens an outer span for this agent. We open a nested
-        # generation span so Langfuse computes cost from token usage.
-        with trace_agent(
-            agent_name=f"{self.agent_name}.llm",
-            stage=self.stage,
-            model=self.model,
+        call = self._generate(
+            system=PLANNER_SYSTEM,
+            user=f"Spec:\n{spec}",
+            max_tokens=2048,
             input_data={"spec": spec},
-            as_type="generation",
-        ) as gen:
-            call = call_model(
-                model=self.model,
-                system=PLANNER_SYSTEM,
-                user=f"Spec:\n{spec}",
-                max_tokens=2048,
-            )
-            gen.update(
-                output=call.parsed,
-                model=call.model,
-                usage_details=call.usage,
-                metadata={"latency_ms": call.latency_ms},
-            )
+        )
 
         plan = call.parsed or {}
         if not isinstance(plan.get("tasks"), list) or not plan["tasks"]:

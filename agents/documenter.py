@@ -17,10 +17,8 @@ import json
 from typing import Any
 from uuid import UUID
 
-from agents.anthropic_client import call_model
 from agents.base_agent import BaseAgent
 from agents.models import ROUTING
-from observability.langfuse import trace_agent
 
 DOCUMENTER_SYSTEM = """You are the Documenter agent. You receive code that has already been
 reviewed and approved. Your job: add docstrings and inline comments without
@@ -53,25 +51,12 @@ class Documenter(BaseAgent):
         if not final_code:
             raise ValueError("Documenter: missing 'final_code' in inputs")
 
-        with trace_agent(
-            agent_name=f"{self.agent_name}.llm",
-            stage=self.stage,
-            model=self.model,
+        call = self._generate(
+            system=DOCUMENTER_SYSTEM,
+            user=json.dumps({"final_code": final_code}),
+            max_tokens=4096,
             input_data={"code_chars": len(final_code)},
-            as_type="generation",
-        ) as gen:
-            call = call_model(
-                model=self.model,
-                system=DOCUMENTER_SYSTEM,
-                user=json.dumps({"final_code": final_code}),
-                max_tokens=4096,
-            )
-            gen.update(
-                output=call.parsed,
-                model=call.model,
-                usage_details=call.usage,
-                metadata={"latency_ms": call.latency_ms},
-            )
+        )
 
         out = call.parsed or {}
         out["llm_latency_ms"] = call.latency_ms

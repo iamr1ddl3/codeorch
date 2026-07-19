@@ -22,10 +22,8 @@ import json
 from typing import Any
 from uuid import UUID
 
-from agents.anthropic_client import call_model
 from agents.base_agent import BaseAgent
 from agents.models import ROUTING
-from observability.langfuse import trace_agent
 
 REVIEWER_SYSTEM = """You are the Reviewer agent — the final human-in-the-loop substitute before
 the run completes. You receive (a) the Coder's code files, (b) the Tester's
@@ -79,29 +77,16 @@ class Reviewer(BaseAgent):
                 "issues": gate.get("issues", []),
             },
         }
-        with trace_agent(
-            agent_name=f"{self.agent_name}.llm",
-            stage=self.stage,
-            model=self.model,
+        call = self._generate(
+            system=REVIEWER_SYSTEM,
+            user=json.dumps(payload),
+            max_tokens=4096,
             input_data={
                 "code_files": len(code.get("files", {})),
                 "test_files": len(tests.get("test_files", {})),
                 "gate_score": gate.get("score"),
             },
-            as_type="generation",
-        ) as gen:
-            call = call_model(
-                model=self.model,
-                system=REVIEWER_SYSTEM,
-                user=json.dumps(payload),
-                max_tokens=4096,
-            )
-            gen.update(
-                output=call.parsed,
-                model=call.model,
-                usage_details=call.usage,
-                metadata={"latency_ms": call.latency_ms},
-            )
+        )
 
         out = call.parsed or {}
         out["llm_latency_ms"] = call.latency_ms

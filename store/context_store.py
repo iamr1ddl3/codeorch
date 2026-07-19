@@ -17,6 +17,9 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 
+_COLS = "id, run_id, stage, agent_name, output_json, score, status, error, timestamp"
+
+
 @dataclass
 class StageRecord:
     id: int
@@ -82,9 +85,8 @@ class ContextStore:
         """
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT id, run_id, stage, agent_name, output_json,
-                       score, status, error, timestamp
+                f"""
+                SELECT {_COLS}
                 FROM agent_context
                 WHERE run_id = %s AND stage = %s
                 ORDER BY timestamp DESC
@@ -101,9 +103,8 @@ class ContextStore:
         """All records for a run, ordered by timestamp ascending."""
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
-                """
-                SELECT id, run_id, stage, agent_name, output_json,
-                       score, status, error, timestamp
+                f"""
+                SELECT {_COLS}
                 FROM agent_context
                 WHERE run_id = %s
                 ORDER BY timestamp ASC

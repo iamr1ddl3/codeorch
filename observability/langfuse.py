@@ -52,19 +52,9 @@ class _SpanProxy:
         usage_details: dict[str, int] | None = None,
         model: str | None = None,
     ) -> None:
-        kwargs: dict[str, Any] = {}
-        if output is not None:
-            kwargs["output"] = output
-        if metadata is not None:
-            kwargs["metadata"] = metadata
-        if level is not None:
-            kwargs["level"] = level
-        if status_message is not None:
-            kwargs["status_message"] = status_message
-        if usage_details is not None:
-            kwargs["usage_details"] = usage_details
-        if model is not None:
-            kwargs["model"] = model
+        kwargs = {
+            k: v for k, v in locals().items() if k != "self" and v is not None
+        }
         if kwargs:
             self._span.update(**kwargs)
 

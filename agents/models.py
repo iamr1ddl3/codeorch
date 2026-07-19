@@ -92,3 +92,28 @@ ROUTING: dict[str, dict[str, str]] = {
     "reviewer":     {"model": SONNET, "rationale": "holistic final judgment; cheaper variants untested"},
     "documenter":   {"model": HAIKU,  "rationale": "mechanical docstring addition; < $0.01 cost ceiling holds"},
 }
+
+# Public Anthropic list prices, USD per million tokens. Single source of
+# truth — the dashboard and RouterBench both import this.
+PRICING: dict[str, dict[str, float]] = {
+    OPUS:   {"in": 15.00, "out": 75.00},
+    SONNET: {"in":  3.00, "out": 15.00},
+    HAIKU:  {"in":  0.80, "out":  4.00},
+}
+
+# Stage name -> role key in ROUTING. The orchestrator's own stage is
+# "orchestrator"; the sub-agents write under short stage names.
+STAGE_ROLE = {
+    "orchestrator": "orchestrator",
+    "plan": "planner",
+    "code": "coder",
+    "tests": "tester",
+    "gate": "quality_gate",
+    "review": "reviewer",
+    "doc": "documenter",
+}
+
+
+def model_for_stage(stage: str) -> str:
+    role = STAGE_ROLE.get(stage)
+    return ROUTING[role]["model"] if role else "unknown"

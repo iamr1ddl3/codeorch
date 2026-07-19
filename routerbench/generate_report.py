@@ -26,6 +26,12 @@ from pathlib import Path
 
 import plotly.graph_objects as go
 
+VARIANT_COLORS = {
+    "haiku-weighted": "#2563eb",
+    "haiku-verdict":  "#16a34a",
+    "sonnet-verdict": "#d97706",
+}
+
 
 def load_results(path: Path) -> list[dict]:
     rows = []
@@ -86,12 +92,7 @@ def aggregate(rows: list[dict]) -> dict:
 def make_scatter(rows: list[dict]) -> str:
     """Score vs latency scatter, colored by variant."""
     fig = go.Figure()
-    color_map = {
-        "haiku-weighted": "#2563eb",
-        "haiku-verdict":  "#16a34a",
-        "sonnet-verdict": "#d97706",
-    }
-    for variant, color in color_map.items():
+    for variant, color in VARIANT_COLORS.items():
         vrows = [r for r in rows if r.get("variant") == variant]
         fig.add_trace(go.Scatter(
             x=[r["llm_latency_ms"] for r in vrows],
@@ -115,12 +116,7 @@ def make_scatter(rows: list[dict]) -> str:
 
 def make_latency_box(rows: list[dict]) -> str:
     fig = go.Figure()
-    color_map = {
-        "haiku-weighted": "#2563eb",
-        "haiku-verdict":  "#16a34a",
-        "sonnet-verdict": "#d97706",
-    }
-    for variant, color in color_map.items():
+    for variant, color in VARIANT_COLORS.items():
         vrows = [r for r in rows if r.get("variant") == variant]
         fig.add_trace(go.Box(
             y=[r["llm_latency_ms"] for r in vrows],

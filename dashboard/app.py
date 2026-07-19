@@ -13,6 +13,7 @@ here. Anchor every visual to a Dhruv-vocabulary term.
 from __future__ import annotations
 
 import os
+import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -26,16 +27,10 @@ import streamlit as st
 from dotenv import load_dotenv
 
 ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env", override=True)
 
-# --- Pricing table — input/output USD per million tokens ---
-# Used to compute SLI #6 (cost per task per model). Update if Anthropic
-# changes pricing. These are public list prices as of sprint start.
-PRICING = {
-    "claude-opus-4-7":              {"in": 15.00, "out": 75.00},
-    "claude-sonnet-4-6":            {"in":  3.00, "out": 15.00},
-    "claude-haiku-4-5-20251001":    {"in":  0.80, "out":  4.00},
-}
+from agents.models import HAIKU, OPUS, PRICING, model_for_stage  # noqa: E402,F401
 
 # SLI thresholds from DESIGN.md / RocketVocabularyIntel.md
 SLI = {
@@ -92,18 +87,6 @@ def _stage_latency_ms(df: pd.DataFrame, stage: str) -> pd.Series:
     ).dropna()
 
 
-def _model_for_stage(stage: str) -> str:
-    return {
-        "orchestrator": "claude-opus-4-7",
-        "plan":         "claude-sonnet-4-6",
-        "code":         "claude-sonnet-4-6",
-        "tests":        "claude-sonnet-4-6",
-        "gate":         "claude-haiku-4-5-20251001",
-        "review":       "claude-sonnet-4-6",
-        "doc":          "claude-haiku-4-5-20251001",
-    }.get(stage, "unknown")
-
-
 def compute_slis(df: pd.DataFrame) -> dict[str, Any]:
     """Reduce the records to one row per (run_id, stage) and compute all SLIs."""
     if df.empty:
@@ -153,15 +136,15 @@ def compute_slis(df: pd.DataFrame) -> dict[str, Any]:
     for _, r in df.iterrows():
         if r["status"] != "success" or r["stage"] == "spec":
             continue
-        m = _model_for_stage(r["stage"])
+        m = model_for_stage(r["stage"])
         # Rough estimate based on average token usage seen in Day 5 sweeps.
         # Replace with Langfuse-derived cost in Day 7.
-        if m == "claude-opus-4-7":
+        if m == OPUS:
             cost_by_model[m] += 0.05      # orchestrator summary call
-        elif m == "claude-sonnet-4-6":
-            cost_by_model[m] += 0.015     # planner/coder/tester/reviewer
-        elif m == "claude-haiku-4-5-20251001":
+        elif m == HAIKU:
             cost_by_model[m] += 0.005     # gate/documenter
+        else:
+            cost_by_model[m] += 0.015     # sonnet: planner/coder/tester/reviewer
 
     # SLI #7 — Retry rate. Look at orchestrator output_json.retries_used.
     orch_rows = df[df["stage"] == "orchestrator"]
@@ -177,7 +160,7 @@ def compute_slis(df: pd.DataFrame) -> dict[str, Any]:
     for _, r in df.iterrows():
         if r["stage"] == "spec":
             continue
-        model_counter[_model_for_stage(r["stage"])] += 1
+        model_counter[model_for_stage(r["stage"])] += 1
     total = sum(model_counter.values()) or 1
     model_share = {m: c / total for m, c in model_counter.items()}
 
@@ -332,8 +315,8 @@ def main():
             )
             fig.update_layout(showlegend=False, height=300)
             st.plotly_chart(fig, use_container_width=True)
-            opus_share = sli["model_share"].get("claude-opus-4-7", 0)
-            haiku_share = sli["model_share"].get("claude-haiku-4-5-20251001", 0)
+            opus_share = sli["model_share"].get(OPUS, 0)
+            haiku_share = sli["model_share"].get(HAIKU, 0)
             st.caption(
                 f"Opus share: {opus_share*100:.1f}% (target {SLI['opus_share']['label']})  ·  "
                 f"Haiku share: {haiku_share*100:.1f}% (target {SLI['haiku_share']['label']})"
