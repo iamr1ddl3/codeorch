@@ -37,15 +37,9 @@ load_dotenv(ROOT / ".env", override=True)
 import psycopg  # noqa: E402
 
 from agents.gate_variants import VARIANTS  # noqa: E402
+from agents.models import PRICING  # noqa: E402
 from observability.langfuse import trace_run  # noqa: E402
 from store.context_store import ContextStore  # noqa: E402
-
-# Pricing — USD per million tokens. Same table as the dashboard.
-PRICING = {
-    "claude-opus-4-7":            {"in": 15.00, "out": 75.00},
-    "claude-sonnet-4-6":          {"in":  3.00, "out": 15.00},
-    "claude-haiku-4-5-20251001":  {"in":  0.80, "out":  4.00},
-}
 
 
 def cost_usd(model: str, input_tokens: int, output_tokens: int) -> float:

@@ -27,10 +27,8 @@ import json
 from typing import Any
 from uuid import UUID
 
-from agents.anthropic_client import call_model
 from agents.base_agent import BaseAgent
 from agents.models import ROUTING
-from observability.langfuse import trace_agent
 
 GATE_SYSTEM_VERDICT = """You are the Quality Gate. Score a code-generation run on a 0.0-1.0 scale.
 
@@ -102,6 +100,40 @@ Flag hallucinations explicitly in "issues" — anything the Coder fabricated
 GATE_SYSTEM = GATE_SYSTEM_VERDICT
 
 
+def compact_gate_payload(
+    plan: dict[str, Any], code: dict[str, Any], tests: dict[str, Any]
+) -> dict[str, Any]:
+    """Trim plan/code/tests to what the gate needs. Full file content inflates
+    input tokens; the gate only needs task ids + acceptance criteria + the
+    actual code/test strings. Shared by QualityGate and every gate variant."""
+    return {
+        "plan": {
+            "tasks": [
+                {"id": t.get("id"), "ac": t.get("acceptance_criterion")}
+                for t in plan.get("tasks", [])
+            ],
+            "acceptance_criteria": plan.get("acceptance_criteria", []),
+        },
+        "code_files": code.get("files", {}),
+        "test_files": tests.get("test_files", {}),
+    }
+
+
+def apply_verdict(out: dict[str, Any], label: str) -> dict[str, Any]:
+    """Validate the score and overwrite verdict/routing to stay consistent
+    with it, in case the model contradicts itself. Mutates and returns out."""
+    score = out.get("score")
+    if not isinstance(score, (int, float)) or not 0.0 <= score <= 1.0:
+        raise ValueError(f"{label}: invalid score {score!r}")
+    if score >= 0.75:
+        out["verdict"], out["routing"] = "pass", "reviewer"
+    elif score >= 0.50:
+        out["verdict"], out["routing"] = "retry", "retry"
+    else:
+        out["verdict"], out["routing"] = "escalate", "orchestrator"
+    return out
+
+
 class QualityGate(BaseAgent):
     stage = "gate"
     agent_name = "QualityGate"
@@ -114,62 +146,19 @@ class QualityGate(BaseAgent):
         if not (plan and code and tests):
             raise ValueError("QualityGate: missing one of plan/code/tests")
 
-        # Compact payload for the gate. Plan/code/tests structures contain
-        # full file content which inflates input tokens. Gate only needs
-        # task ids + acceptance criteria + the actual code/tests strings.
-        compact_plan = {
-            "tasks": [
-                {"id": t.get("id"), "ac": t.get("acceptance_criterion")}
-                for t in plan.get("tasks", [])
-            ],
-            "acceptance_criteria": plan.get("acceptance_criteria", []),
-        }
-        payload = {
-            "plan": compact_plan,
-            "code_files": code.get("files", {}),
-            "test_files": tests.get("test_files", {}),
-        }
-        with trace_agent(
-            agent_name=f"{self.agent_name}.llm",
-            stage=self.stage,
-            model=self.model,
+        call = self._generate(
+            system=GATE_SYSTEM_VERDICT,
+            user=json.dumps(compact_gate_payload(plan, code, tests)),  # no indent — saves ~30% tokens
+            max_tokens=512,  # verdict-only output is small; capped for Haiku speed
             input_data={
                 "plan_tasks": len(plan.get("tasks", [])),
                 "code_files": len(code.get("files", {})),
                 "test_files": len(tests.get("test_files", {})),
             },
-            as_type="generation",
-        ) as gen:
-            call = call_model(
-                model=self.model,
-                system=GATE_SYSTEM_VERDICT,
-                user=json.dumps(payload),  # no indent — saves ~30% tokens
-                max_tokens=512,  # verdict-only output is small; capped for Haiku speed
-            )
-            gen.update(
-                output=call.parsed,
-                model=call.model,
-                usage_details=call.usage,
-                metadata={"latency_ms": call.latency_ms},
-            )
+        )
 
         out = call.parsed or {}
         # Capture the actual LLM latency on the output_json — independent of
         # DB write or Langfuse flush time, both of which are measured elsewhere.
         out["llm_latency_ms"] = call.latency_ms
-        score = out.get("score")
-        if not isinstance(score, (int, float)) or not 0.0 <= score <= 1.0:
-            raise ValueError(f"QualityGate: invalid score {score!r}")
-
-        # Enforce verdict/routing consistency in case the model contradicts itself.
-        if score >= 0.75:
-            out["verdict"], out["routing"] = "pass", "reviewer"
-        elif score >= 0.50:
-            out["verdict"], out["routing"] = "retry", "retry"
-        else:
-            out["verdict"], out["routing"] = "escalate", "orchestrator"
-
-        # Persist the score on the row so the dashboard can read it directly.
-        # base_agent.run() will write the full output_json; we set self._score
-        # so a future override could pass it through to write_stage.
-        return out
+        return apply_verdict(out, "QualityGate")

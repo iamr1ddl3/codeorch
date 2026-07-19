@@ -18,10 +18,8 @@ import json
 from typing import Any
 from uuid import UUID
 
-from agents.anthropic_client import acall_model
 from agents.base_agent import BaseAgent
 from agents.models import ROUTING
-from observability.langfuse import trace_agent
 
 CODER_SYSTEM = """You are the Coder agent in a multi-agent code generation pipeline.
 
@@ -89,25 +87,12 @@ class Coder(BaseAgent):
         else:
             user = f"Plan:\n{json.dumps(plan, indent=2)}"
 
-        with trace_agent(
-            agent_name=f"{self.agent_name}.llm",
-            stage=self.stage,
-            model=self.model,
+        call = await self._agenerate(
+            system=CODER_SYSTEM,
+            user=user,
+            max_tokens=4096,
             input_data={"task_count": len(plan["tasks"]), "retry_attempt": retry_attempt},
-            as_type="generation",
-        ) as gen:
-            call = await acall_model(
-                model=self.model,
-                system=CODER_SYSTEM,
-                user=user,
-                max_tokens=4096,
-            )
-            gen.update(
-                output=call.parsed,
-                model=call.model,
-                usage_details=call.usage,
-                metadata={"latency_ms": call.latency_ms},
-            )
+        )
 
         out = call.parsed or {}
         out["llm_latency_ms"] = call.latency_ms

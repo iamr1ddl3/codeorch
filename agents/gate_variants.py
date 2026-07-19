@@ -27,34 +27,13 @@ import json
 from typing import Any
 from uuid import UUID
 
-from agents.anthropic_client import call_model
 from agents.base_agent import BaseAgent
 from agents.models import HAIKU, SONNET
-from observability.langfuse import trace_agent
-
-VERDICT_ONLY_SYSTEM = """You are the Quality Gate. Score a code-generation run on a 0.0-1.0 scale.
-
-You receive (a) the plan with acceptance criteria, (b) the Coder's
-implementation files, and (c) the Tester's test files. Score the run
-holistically on correctness, test coverage, code quality, completeness.
-
-Output ONLY valid JSON, no prose, no markdown fences:
-
-{
-  "score": 0.83,
-  "verdict": "pass" | "retry" | "escalate",
-  "routing": "reviewer" | "retry" | "orchestrator",
-  "issues": ["specific issue 1", ...]
-}
-
-Routing rules:
-- score >= 0.75 -> verdict="pass",     routing="reviewer"
-- 0.50 <= score < 0.75 -> verdict="retry",    routing="retry"
-- score  < 0.50 -> verdict="escalate", routing="orchestrator"
-
-Set verdict + routing CONSISTENT with score. Flag hallucinations
-(non-existent APIs, fabricated imports, wrong type signatures) in issues.
-"""
+from agents.quality_gate import (
+    GATE_SYSTEM_VERDICT as VERDICT_ONLY_SYSTEM,
+    apply_verdict,
+    compact_gate_payload,
+)
 
 
 class _BaseGateVariant(BaseAgent):
@@ -77,40 +56,12 @@ class _BaseGateVariant(BaseAgent):
         if not (plan and code and tests):
             raise ValueError(f"{self.variant_name}: missing one of plan/code/tests")
 
-        compact_plan = {
-            "tasks": [
-                {"id": t.get("id"), "ac": t.get("acceptance_criterion")}
-                for t in plan.get("tasks", [])
-            ],
-            "acceptance_criteria": plan.get("acceptance_criteria", []),
-        }
-        payload = {
-            "plan": compact_plan,
-            "code_files": code.get("files", {}),
-            "test_files": tests.get("test_files", {}),
-        }
-        with trace_agent(
-            agent_name=f"{self.agent_name}.llm",
-            stage=self.stage,
-            model=self.model,
+        call = self._generate(
+            system=self.variant_system,
+            user=json.dumps(compact_gate_payload(plan, code, tests)),
+            max_tokens=self.max_tokens,
             input_data={"variant": self.variant_name},
-            as_type="generation",
-        ) as gen:
-            call = call_model(
-                model=self.model,
-                system=self.variant_system,
-                user=json.dumps(payload),
-                max_tokens=self.max_tokens,
-            )
-            gen.update(
-                output=call.parsed,
-                model=call.model,
-                usage_details=call.usage,
-                metadata={
-                    "latency_ms": call.latency_ms,
-                    "variant": self.variant_name,
-                },
-            )
+        )
 
         out = call.parsed or {}
         out["llm_latency_ms"] = call.latency_ms
@@ -118,18 +69,7 @@ class _BaseGateVariant(BaseAgent):
         out["input_tokens"] = call.usage.get("input", 0)
         out["output_tokens"] = call.usage.get("output", 0)
         out["model"] = call.model
-
-        score = out.get("score")
-        if not isinstance(score, (int, float)) or not 0.0 <= score <= 1.0:
-            raise ValueError(f"{self.variant_name}: invalid score {score!r}")
-
-        if score >= 0.75:
-            out["verdict"], out["routing"] = "pass", "reviewer"
-        elif score >= 0.50:
-            out["verdict"], out["routing"] = "retry", "retry"
-        else:
-            out["verdict"], out["routing"] = "escalate", "orchestrator"
-        return out
+        return apply_verdict(out, self.variant_name)
 
 
 class GateHaikuWeighted(_BaseGateVariant):

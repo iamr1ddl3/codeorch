@@ -157,7 +157,7 @@ codeorch/
 ├── scripts/init_schema.sql     agent_context table + indexes
 ├── store/context_store.py      write_stage / read_stage / list_run
 ├── agents/
-│   ├── base_agent.py           sync run() + async arun(); try/catch + partial state writer
+│   ├── base_agent.py           sync run() + async arun(); try/catch + partial state writer; shared _generate helper
 │   ├── anthropic_client.py     sync + async call wrappers; JSON parse + token usage
 │   ├── models.py               central routing table (Opus 4.7 / Sonnet 4.6 / Haiku 4.5)
 │   ├── planner.py              Sonnet — spec → structured plan

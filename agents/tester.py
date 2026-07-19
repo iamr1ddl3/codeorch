@@ -19,10 +19,8 @@ import json
 from typing import Any
 from uuid import UUID
 
-from agents.anthropic_client import acall_model
 from agents.base_agent import BaseAgent
 from agents.models import ROUTING
-from observability.langfuse import trace_agent
 
 TESTER_SYSTEM = """You are the Tester agent in a multi-agent code generation pipeline.
 
@@ -64,25 +62,12 @@ class Tester(BaseAgent):
         if not plan or not plan.get("tasks"):
             raise ValueError("Tester: missing or empty 'plan.tasks' in inputs")
 
-        with trace_agent(
-            agent_name=f"{self.agent_name}.llm",
-            stage=self.stage,
-            model=self.model,
+        call = await self._agenerate(
+            system=TESTER_SYSTEM,
+            user=f"Plan:\n{json.dumps(plan, indent=2)}",
+            max_tokens=4096,
             input_data={"task_count": len(plan["tasks"])},
-            as_type="generation",
-        ) as gen:
-            call = await acall_model(
-                model=self.model,
-                system=TESTER_SYSTEM,
-                user=f"Plan:\n{json.dumps(plan, indent=2)}",
-                max_tokens=4096,
-            )
-            gen.update(
-                output=call.parsed,
-                model=call.model,
-                usage_details=call.usage,
-                metadata={"latency_ms": call.latency_ms},
-            )
+        )
 
         out = call.parsed or {}
         if not isinstance(out.get("test_files"), dict) or not out["test_files"]:
