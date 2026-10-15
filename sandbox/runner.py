@@ -139,7 +139,7 @@ def _write_files(dest: Path, files: dict[str, str]) -> None:
 def _prepare_local_app(run_dir: Path, files: dict[str, str], layout: str) -> Path:
     app = run_dir / "app"
     shutil.copytree(TEMPLATE_DIR, app, ignore=shutil.ignore_patterns("node_modules", ".next"))
-    os.symlink(TEMPLATE_DIR / "node_modules", app / "node_modules")
+    os.symlink(_node_modules(), app / "node_modules")
     if layout == "src":
         shutil.rmtree(app / "app")
     _write_files(app, files)
@@ -241,8 +241,15 @@ def docker_available() -> bool:
         return False
 
 
+def _node_modules() -> Path:
+    """Template deps for local mode. CODEORCH_SANDBOX_NODE_MODULES lets a
+    different OS keep its own install (native binaries differ per platform)."""
+    override = os.environ.get("CODEORCH_SANDBOX_NODE_MODULES")
+    return Path(override) if override else TEMPLATE_DIR / "node_modules"
+
+
 def _run_local(app: Path, out_dir: Path) -> None:
-    if not (TEMPLATE_DIR / "node_modules").exists():
+    if not _node_modules().exists():
         raise RuntimeError("template deps missing: run `npm ci` in sandbox/template first")
     subprocess.run(["bash", str(CHECK_SH), str(app), str(out_dir)],
                    capture_output=True, timeout=TIMEOUT_S, check=False)
@@ -274,6 +281,8 @@ def run_build_check(files: dict[str, str], mode: str | None = None,
     mode = mode or ("docker" if docker_available() else "local")
     run_id = run_id or time.strftime("%Y%m%d-%H%M%S-") + uuid.uuid4().hex[:6]
     run_dir = RUNS_DIR / run_id
+    if run_dir.exists():  # re-running the same id replaces the old attempt
+        shutil.rmtree(run_dir)
     out_dir = run_dir / "out"
     out_dir.mkdir(parents=True, exist_ok=True)
     t0 = time.monotonic()

@@ -70,3 +70,6 @@ sandbox/template/node_modules/
 sandbox/template/.next/
 sandbox/runs/
 sandbox/verify-docker.command
+
+# Benchmark generations (raw outputs + results); publish selectively
+benchmark/runs/

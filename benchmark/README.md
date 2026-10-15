@@ -39,6 +39,24 @@ The prompt above is the user message. Every model also gets the same system inst
 
 The output goes straight to `sandbox/runner.py`.
 
+## Running the generation
+
+`generate.py` sends every prompt to every model with the same system contract, saves the raw response, parses the files, build-checks them in the sandbox, and appends one record per sample to `benchmark/runs/<batch>/results.jsonl` (git-ignored).
+
+```bash
+# test run: 3 prompts, 1 sample, Claude only, $1.50 cap
+python -m benchmark.generate --batch dry --prompts R01,W000028,R11 --models haiku,sonnet --samples 1 --budget 1.5
+
+# full run: 30 prompts x 3 samples x 3 models, $20 hard cap, sandbox in Docker
+python -m benchmark.generate --batch b1 --budget 20 --sandbox-mode docker
+```
+
+- **Models:** `haiku` = claude-haiku-4-5-20251001 ($1/$5 per MTok), `sonnet` = claude-sonnet-4-6 ($3/$15). `gemini` is enabled only when `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_PRICE_IN` and `GEMINI_PRICE_OUT` are all set in `.env`, so the budget is never computed on a guessed price.
+- **Budget:** before each call the worst case (estimated input + 16k output tokens) is reserved; a call that could exceed `--budget` is not made, even with parallel workers. Re-running a batch resumes and counts earlier spend.
+- **Failures are recorded, not dropped:** `parse_error` (no `<file>` blocks), `truncated` (hit the output limit), `provider_error` (retried on resume). Billing/auth errors abort the batch at the first occurrence.
+- **Sampling:** API default temperature (1.0) so the 3 samples per prompt are independent, as pass@k requires.
+- **Output format:** `<file path="...">` blocks instead of JSON, so escaping whole source files in JSON isn't a hidden failure mode.
+
 ## Known limits
 
 - The WebGen-Bench tier rule (number of UI tests: ≤5 low, 6 moderate, ≥7 high) is a proxy. Some "low" prompts (for example W000003, a multi-company financial dashboard) are harder than the tier suggests. Tiers are for stratification, not a claim about difficulty; per-prompt pass rates will show the real difficulty.
