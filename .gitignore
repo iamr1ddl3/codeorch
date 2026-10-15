@@ -69,3 +69,4 @@ codeorch-architecture.gif
 sandbox/template/node_modules/
 sandbox/template/.next/
 sandbox/runs/
+sandbox/verify-docker.command

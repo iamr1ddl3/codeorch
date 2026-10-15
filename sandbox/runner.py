@@ -211,6 +211,9 @@ def _collect(out_dir: Path, app_root: str) -> list[StepResult]:
         dur = rec["duration_ms"] if rec else None
         sr = StepResult(step=step, exit_code=code, duration_ms=dur, passed=(code == 0),
                         log=str(out_dir / (rec["log"] if rec else f"{step}.log")))
+        if rec is None:  # step never ran: harness problem, nothing to parse
+            results.append(sr)
+            continue
         if step == "tsc":
             sr.error_count, sr.errors = _parse_tsc(log("tsc.log"))
         elif step == "eslint":
@@ -248,13 +251,21 @@ def _run_local(app: Path, out_dir: Path) -> None:
 def _run_docker(run_dir: Path, files: dict[str, str], out_dir: Path) -> None:
     gen = run_dir / "gen"
     _write_files(gen, files)
-    out_dir.chmod(0o777)  # container runs as non-root `node`
+    # The container runs as non-root `node`: make inputs readable and the
+    # output dir writable regardless of the host's umask / file modes.
+    for d, _, fs in os.walk(gen):
+        os.chmod(d, 0o755)
+        for f in fs:
+            os.chmod(os.path.join(d, f), 0o644)
+    out_dir.chmod(0o777)
     cmd = [
         "docker", "run", "--rm", "--network", "none",
         "--memory", "2g", "--cpus", "2", "--pids-limit", "512",
         "-v", f"{gen}:/gen:ro", "-v", f"{out_dir}:/out", IMAGE,
     ]
-    subprocess.run(cmd, capture_output=True, timeout=TIMEOUT_S, check=False)
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=TIMEOUT_S, check=False)
+    (run_dir / "docker.log").write_text(
+        f"$ {' '.join(cmd)}\nexit={proc.returncode}\n--- stdout ---\n{proc.stdout}\n--- stderr ---\n{proc.stderr}")
 
 
 def run_build_check(files: dict[str, str], mode: str | None = None,
@@ -299,7 +310,9 @@ def run_build_check(files: dict[str, str], mode: str | None = None,
 
     steps = _collect(out_dir, app_root)
     if all(s.exit_code is None for s in steps):
-        return finish("sandbox_error", steps, "no step results recorded")
+        dlog = run_dir / "docker.log"
+        tail = dlog.read_text(errors="replace")[-800:] if dlog.exists() else ""
+        return finish("sandbox_error", steps, "no step results recorded" + (f"\n{tail}" if tail else ""))
     return finish("passed" if all(s.passed for s in steps) else "failed", steps)
 
 
@@ -329,7 +342,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  [{mark}] {s.step:<6} exit={s.exit_code} errors={s.error_count} warnings={s.warning_count} {s.duration_ms} ms")
         for e in s.errors[:3]:
             loc = f"{e.get('file')}:{e.get('line')}" if e.get("file") else ""
-            print(f"        {e.get('code')} {loc} {str(e.get('message')).splitlines()[0][:110]}")
+            first = (str(e.get("message") or "").strip().splitlines() or [""])[0]
+            print(f"        {e.get('code')} {loc} {first[:110]}")
     for r in res.rejected_files:
         print(f"  [rejected] {r['path']}: {r['reason']}")
     if res.note:

@@ -11,8 +11,10 @@ COPY template/package.json template/package-lock.json ./
 RUN npm ci --no-audit --no-fund
 
 COPY template/ ./
-COPY check.sh entrypoint.sh /usr/local/bin/
+# --chmod: host file modes (e.g. 700 on macOS) would otherwise make these
+# unreadable to the non-root user.
+COPY --chmod=755 check.sh entrypoint.sh /usr/local/bin/
 RUN chown -R node:node /app
 
 USER node
-ENTRYPOINT ["/usr/local/bin/entrypoint.sh"]
+ENTRYPOINT ["bash", "/usr/local/bin/entrypoint.sh"]
