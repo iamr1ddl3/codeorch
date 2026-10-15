@@ -180,10 +180,13 @@ def _parse_eslint(json_path: Path, app_root: str) -> tuple[int, int, list[dict[s
     return n_err, n_warn, errs[:50]
 
 
+_ANSI_RE = re.compile(r"\x1b\[[0-9;]*m")
+
+
 def _parse_build(text: str, exit_code: int | None) -> tuple[int, list[dict[str, Any]]]:
     if exit_code == 0:
         return 0, []
-    lines = text.splitlines()
+    lines = _ANSI_RE.sub("", text).splitlines()
     hits = [i for i, l in enumerate(lines) if _BUILD_ERR_RE.search(l)]
     if not hits:  # failed without a recognisable marker: keep the tail
         return 1, [{"code": "build-failed", "message": "\n".join(lines[-15:])}]

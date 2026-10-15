@@ -169,3 +169,45 @@ def test_budget_cut_drops_later_samples_not_later_prompts(tmp_path):
     recs = [json.loads(l) for l in (tmp_path / "b" / "results.jsonl").read_text().splitlines()]
     assert sorted(r["prompt_id"] for r in recs) == ["P0", "P1", "P2"]  # every prompt got sample 0
     assert {r["sample"] for r in recs} == {0}
+
+
+def test_parse_output_strict():
+    files, fmt, inc = g.parse_output(GOOD)
+    assert fmt == "strict" and list(files) == ["app/page.tsx"] and inc == []
+
+
+def test_parse_output_unclosed_and_name_attribute():
+    text = ('<file path="app/page.tsx">\nexport default function P() { return null; }\n'
+            '<file name="lib/a.ts">\nexport const a = 1;\n')
+    files, fmt, inc = g.parse_output(text, truncated=False)
+    assert fmt == "unclosed" and set(files) == {"app/page.tsx", "lib/a.ts"} and inc == []
+    assert files["lib/a.ts"] == "export const a = 1;\n"
+
+
+def test_parse_output_unclosed_truncated_drops_last_block():
+    text = '<file path="app/page.tsx">\nexport default 1;\n<file path="lib/a.ts">\nexport const a ='
+    files, fmt, inc = g.parse_output(text, truncated=True)
+    assert set(files) == {"app/page.tsx"} and inc == ["lib/a.ts"]
+
+
+def test_parse_output_fenced_with_path_comment():
+    text = ('Here you go.\n```css\n/* app/globals.css */\n@import "tailwindcss";\n```\n'
+            '```tsx\n// app/page.tsx\nexport default function P() { return null; }\n```\n'
+            '```bash\nnpm run dev\n```\n')
+    files, fmt, inc = g.parse_output(text)
+    assert fmt == "fenced" and set(files) == {"app/globals.css", "app/page.tsx"}
+    assert files["app/globals.css"] == '@import "tailwindcss";\n'
+
+
+def test_parse_output_prose_only_is_none():
+    files, fmt, _ = g.parse_output("Here is a plan.\n```css\nbody { color: red; }\n```\n")
+    assert files == {} and fmt == "none"
+
+
+def test_unclosed_block_with_closed_fence_and_trailing_prose():
+    text = ('<file path="app/page.tsx">\n```tsx\nconst s = `hi`;\nexport default function P() { return null; }\n```\n'
+            'Now the next file.\n<file path="lib/a.ts">\nexport const a = 1;\n```\n')
+    files, fmt, _ = g.parse_output(text)
+    assert fmt == "unclosed"
+    assert files["app/page.tsx"] == "const s = `hi`;\nexport default function P() { return null; }\n"
+    assert files["lib/a.ts"] == "export const a = 1;\n"

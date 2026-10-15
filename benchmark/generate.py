@@ -71,24 +71,85 @@ Output format — return every file in full, each in its own block, and nothing 
 
 _FILE_RE = re.compile(r'<file\s+path="([^"]+)"\s*>\n?(.*?)\n?</file>', re.S)
 _FENCE_RE = re.compile(r"^\s*```[a-zA-Z]*\n(.*)\n```\s*$", re.S)
+# Lenient forms seen in real outputs: unclosed blocks, `name=` instead of `path=`.
+_OPEN_ANY_RE = re.compile(r'<file\s+(?:path|name)="([^"]+)"\s*>\n?')
+# Markdown fence whose first line is a path comment: // app/page.tsx, /* app/globals.css */, {/* ... */}, # ...
+_MD_BLOCK_RE = re.compile(r"```[a-zA-Z]*\n(.*?)```", re.S)
+_PATH_COMMENT_RE = re.compile(
+    r"^\s*(?://|/\*|\{/\*|#|<!--)\s*((?:app|components|lib|src|hooks|types|utils|styles|data|public)/"
+    r"[\w./\[\]()@-]+\.(?:tsx?|jsx?|css|json|md|mjs))\s*(?:\*/\}?|-->)?\s*$")
 
 
-_OPEN_RE = re.compile(r'<file\s+path="([^"]+)"\s*>')
+def _strip_fence(body: str) -> str:
+    m = _FENCE_RE.match(body)
+    return (m.group(1) if m else body).rstrip() + "\n"
 
 
-def incomplete_files(text: str) -> list[str]:
-    """Paths whose <file> block was opened but never closed (output cut off).
-    parse_files drops these, so the app can build while a feature is missing."""
-    closed = {p for p, _ in _FILE_RE.findall(text or "")}
-    return [p.strip() for p in _OPEN_RE.findall(text or "") if p not in closed]
+_FENCE_LINE_RE = re.compile(r"^\s*```[a-zA-Z]*\s*$")
+
+
+def _clean_unclosed(body: str) -> str:
+    """Body of an unclosed <file> block: drop a leading ```lang line and cut at
+    the last bare ``` line (models often close the code fence but not the
+    tag, then add prose). Without this the stray fence breaks the file."""
+    lines = body.split("\n")
+    if lines and _FENCE_LINE_RE.match(lines[0]):
+        lines = lines[1:]
+    fence_idx = [i for i, l in enumerate(lines) if l.strip() == "```"]
+    if fence_idx:
+        lines = lines[:fence_idx[-1]]
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def parse_output(text: str, truncated: bool = False) -> tuple[dict[str, str], str, list[str]]:
+    """Return (files, format, incomplete_paths).
+
+    format: "strict"  every block is <file path="...">...</file> as instructed
+            "unclosed" <file ...> blocks without closing tags / with name=
+            "fenced"  markdown code blocks whose first line names the path
+            "none"    nothing recognisable (a real failure)
+    Lenient forms are accepted because the intent is unambiguous; the format
+    is recorded so instruction-following is measured separately from code.
+    If the output was truncated, the last block is incomplete and dropped.
+    """
+    text = text or ""
+    strict = {p.strip(): _strip_fence(b) for p, b in _FILE_RE.findall(text)}
+    opened = [m.group(1).strip() for m in _OPEN_ANY_RE.finditer(text)]
+    if strict and len(strict) == len(opened):
+        return strict, "strict", []
+    if opened:
+        marks = list(_OPEN_ANY_RE.finditer(text))
+        files: dict[str, str] = {}
+        for i, m in enumerate(marks):
+            end = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+            body = text[m.end():end].split("</file>")[0]
+            files[m.group(1).strip()] = _clean_unclosed(body)
+        incomplete = []
+        if truncated and "</file>" not in text[marks[-1].end():]:
+            incomplete = [marks[-1].group(1).strip()]
+            files.pop(incomplete[0], None)
+        return files, "unclosed", incomplete
+    files = {}
+    for body in _MD_BLOCK_RE.findall(text):
+        first, _, rest = body.partition("\n")
+        m = _PATH_COMMENT_RE.match(first)
+        if m:
+            files[m.group(1)] = rest.rstrip() + "\n"
+    if files:
+        incomplete = []
+        if truncated and text.count("```") % 2 == 1:  # an unterminated fence at the end
+            incomplete = ["<last fenced block>"]
+        return files, "fenced", incomplete
+    return {}, "none", []
 
 
 def parse_files(text: str) -> dict[str, str]:
-    files: dict[str, str] = {}
-    for path, body in _FILE_RE.findall(text or ""):
-        m = _FENCE_RE.match(body)  # tolerate a code fence inside the block
-        files[path.strip()] = (m.group(1) if m else body).rstrip() + "\n"
-    return files
+    """Strict-or-lenient file map (see parse_output)."""
+    return parse_output(text)[0]
+
+
+def incomplete_files(text: str, truncated: bool = True) -> list[str]:
+    return parse_output(text, truncated)[2]
 
 
 # --------------------------------------------------------------------------- #
@@ -340,12 +401,12 @@ def run_one(prompt: dict[str, Any], spec: ModelSpec, sample: int, batch_dir: Pat
     raw_path = batch_dir / "raw" / f"{sid}.txt"
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     raw_path.write_text(gen.text)
-    files = parse_files(gen.text)
-    incomplete = incomplete_files(gen.text)
     truncated = gen.stop_reason in ("max_tokens", "MAX_TOKENS", "length")
+    files, fmt, incomplete = parse_output(gen.text, truncated)
     rec.update(model_id=gen.model_id, input_tokens=gen.input_tokens, output_tokens=gen.output_tokens,
                cost_usd=round(cost, 6), gen_latency_ms=gen.latency_ms, stop_reason=gen.stop_reason,
                reasoning_tokens=gen.reasoning_tokens, truncated=truncated, incomplete_files=incomplete,
+               output_format=fmt, format_ok=(fmt == "strict"),
                n_files=len(files), raw=_rel(raw_path))
 
     if not files:
@@ -450,6 +511,44 @@ def run_batch(batch: str, prompts: list[dict[str, Any]], specs: list[ModelSpec],
     return stats
 
 
+def reparse_batch(batch: str, sandbox_mode: str | None, runs_dir: Path | None = None) -> dict[str, int]:
+    """Re-parse saved raw outputs of parse_error samples with the current
+    parser and build them. No API calls; appends updated records (analysis
+    keeps the last record per sample)."""
+    batch_dir = (runs_dir or HERE / "runs") / batch
+    results = batch_dir / "results.jsonl"
+    last: dict[str, dict[str, Any]] = {}
+    for line in results.read_text().splitlines():
+        if line.strip():
+            r = json.loads(line)
+            last[r["sample_id"]] = r
+    stats = {"reparsed": 0, "recovered": 0}
+    for sid, r in last.items():
+        if not r.get("raw") or not (r.get("status") == "parse_error"
+                                     or r.get("output_format") in ("unclosed", "fenced")):
+            continue
+        raw = Path(r["raw"]) if Path(r["raw"]).is_absolute() else ROOT / r["raw"]
+        files, fmt, incomplete = parse_output(raw.read_text(), bool(r.get("truncated")))
+        new = dict(r, output_format=fmt, format_ok=(fmt == "strict"), incomplete_files=incomplete,
+                   n_files=len(files), reparsed=True)
+        stats["reparsed"] += 1
+        if files:
+            res = run_build_check(files, mode=sandbox_mode, run_id=f"{batch}__{sid}")
+            new.update(status="ok", build_status=res.status, build_passed=res.passed,
+                       passed=bool(res.passed and not r.get("truncated") and not incomplete),
+                       build_errors=res.total_errors,
+                       step_passed={s.step: s.passed for s in res.steps},
+                       step_errors={s.step: s.error_count for s in res.steps},
+                       rejected_files=[x["path"] for x in res.rejected_files],
+                       build_wall_ms=res.wall_ms, sandbox_run=res.run_id)
+            stats["recovered"] += 1
+        with results.open("a") as f:
+            f.write(json.dumps(new) + "\n")
+        print(f"reparsed {sid}: format={fmt} files={len(files)} -> "
+              f"{'PASS' if new.get('passed') else new.get('build_status', new['status'])}", flush=True)
+    return stats
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Generate + build-check benchmark apps.")
     ap.add_argument("--batch", required=True, help="run name; re-use it to resume")
@@ -460,7 +559,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--workers", type=int, default=3)
     ap.add_argument("--temperature", type=float, default=1.0)
     ap.add_argument("--sandbox-mode", choices=["local", "docker"], default=None)
+    ap.add_argument("--reparse", action="store_true",
+                    help="re-parse + build saved parse_error outputs with the current parser (no API calls)")
     args = ap.parse_args(argv)
+    if args.reparse:
+        print(json.dumps(reparse_batch(args.batch, args.sandbox_mode)))
+        return 0
 
     try:
         from dotenv import load_dotenv
