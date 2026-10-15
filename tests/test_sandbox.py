@@ -16,7 +16,7 @@ import pytest
 from sandbox import runner
 
 FIXTURES = Path(__file__).parent / "fixtures" / "sandbox"
-HAS_TOOLCHAIN = shutil.which("node") is not None and (runner.TEMPLATE_DIR / "node_modules").exists()
+HAS_TOOLCHAIN = shutil.which("node") is not None and runner._node_modules().exists()
 needs_toolchain = pytest.mark.skipif(not HAS_TOOLCHAIN, reason="node + sandbox/template/node_modules required")
 
 

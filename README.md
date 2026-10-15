@@ -133,11 +133,11 @@ Headline result on the 13-run benchmark:
 
 | Variant | Mean score | Mean latency | Mean cost | Pass rate |
 |---|---|---|---|---|
-| Haiku-weighted | 0.903 | 7.4s | $0.00428 | 92% (12/13) |
-| **Haiku-verdict-only** | **0.915** | **1.9s** | **$0.00189** | **92% (12/13)** |
+| Haiku-weighted | 0.903 | 7.4s | $0.00535 | 92% (12/13) |
+| **Haiku-verdict-only** | **0.915** | **1.9s** | **$0.00236** | **92% (12/13)** |
 | Sonnet-verdict-only | 0.949 | 2.5s | $0.00657 | 92% (12/13)¹ |
 
-<sub>Mean LLM latency and cost per gate call, computed from `routerbench/results.jsonl`. ¹ Sonnet returned prose instead of JSON on 1/13 runs; score, latency and cost are averaged over the 12 parsed runs. At n=13 the score differences are within noise — the latency and cost differences are the robust result.</sub>
+<sub>Mean LLM latency and cost per gate call, computed from token counts in `routerbench/results.jsonl` at current list prices (Haiku 4.5 $1/$5, Sonnet 4.6 $3/$15 per MTok). ¹ Sonnet returned prose instead of JSON on 1/13 runs; score, latency and cost are averaged over the 12 parsed runs. At n=13 the score differences are within noise — the latency and cost differences are the robust result.</sub>
 
 Verdict-only on Haiku beat the weighted rubric on speed and cost (3.9× faster, 56% cheaper) with no loss in score. The production gate was switched to verdict-only as a result; `gate_variants.py` keeps the weighted prompt accessible for retry/escalate paths where decomposed scoring aids root-cause.
 
