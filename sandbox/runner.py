@@ -318,6 +318,8 @@ def run_build_check(files: dict[str, str], mode: str | None = None,
         return finish("sandbox_error", [], f"{type(exc).__name__}: {exc}")
 
     steps = _collect(out_dir, app_root)
+    if mode == "local":  # keep source + logs; drop the ~50 MB build output
+        shutil.rmtree(Path(app_root) / ".next", ignore_errors=True)
     if all(s.exit_code is None for s in steps):
         dlog = run_dir / "docker.log"
         tail = dlog.read_text(errors="replace")[-800:] if dlog.exists() else ""

@@ -140,3 +140,22 @@ def test_complete_output_that_builds_passes(tmp_path):
     g.run_batch("b", PROMPTS[:1], [SPEC], 1, 1000, 1, 1.0, "local", call=fake_call(), runs_dir=tmp_path)
     rec = json.loads((tmp_path / "b" / "results.jsonl").read_text())
     assert rec["passed"] is True and rec["incomplete_files"] == []
+
+
+def test_sse_parsing_skips_noise_and_stops_at_done():
+    lines = ["", ": keep-alive", 'data: {"a": 1}', "", 'data: {"a": 2}', "data: [DONE]", 'data: {"a": 3}']
+    assert [e["a"] for e in g.iter_sse(lines, deadline=10**12)] == [1, 2]
+
+
+def test_sse_deadline_raises_generation_timeout():
+    with pytest.raises(g.GenerationTimeout):
+        list(g.iter_sse(['data: {"a": 1}'], deadline=0))
+
+
+def test_generation_timeout_is_recorded_and_charged_conservatively(tmp_path):
+    def slow(*a):
+        raise g.GenerationTimeout("still generating after 1200s")
+    stats = g.run_batch("b", PROMPTS[:1], [SPEC], 1, 1000, 1, 1.0, "local", call=slow, runs_dir=tmp_path)
+    rec = json.loads((tmp_path / "b" / "results.jsonl").read_text())
+    assert rec["status"] == "gen_timeout" and rec["passed"] is False and rec["cost_estimated"] is True
+    assert stats["spent_usd"] == pytest.approx(g.worst_case_cost(SPEC, g.SYSTEM_PROMPT, "Build a page."), abs=1e-4)

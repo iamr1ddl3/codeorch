@@ -44,6 +44,8 @@ from sandbox.runner import run_build_check  # noqa: E402
 _FATAL_RE = re.compile(r"credit balance|authentication|invalid x-api-key|permission|not_found_error|API key not valid|"
                        r"\b401\b|\b403\b", re.I)
 
+BUILD_SLOTS = threading.Semaphore(int(os.environ.get("CODEORCH_BUILD_CONCURRENCY", "2")))
+
 MAX_OUTPUT_TOKENS = int(os.environ.get("CODEORCH_GEN_MAX_TOKENS", "16000"))
 
 SYSTEM_PROMPT = """You are generating a complete, working web application.
@@ -133,56 +135,94 @@ def _anthropic_call(spec: ModelSpec, system: str, user: str, temperature: float)
                       msg.stop_reason or "", int((time.monotonic() - t0) * 1000), msg.model)
 
 
-def _gemini_call(spec: ModelSpec, system: str, user: str, temperature: float) -> Generation:
+GEN_DEADLINE_S = int(os.environ.get("CODEORCH_GEN_DEADLINE_S", "1200"))
+
+
+class GenerationTimeout(Exception):
+    """The model was still generating at the wall-clock deadline."""
+
+
+def _post_with_retry(url: str, body: dict, headers: dict):
+    """Open a streaming POST, retrying 429/5xx before any tokens arrive."""
     import httpx
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/{spec.model_id}:generateContent"
+    client = httpx.Client(timeout=httpx.Timeout(120.0, read=300.0))
+    for attempt in range(5):
+        req = client.build_request("POST", url, json=body, headers=headers)
+        resp = client.send(req, stream=True)
+        if resp.status_code not in (429, 500, 502, 503):
+            break
+        resp.read(); resp.close()
+        time.sleep(min(2 ** attempt * 5, 90))
+    if resp.status_code >= 400:
+        detail = resp.read().decode(errors="replace")[:300]
+        resp.close(); client.close()
+        raise RuntimeError(f"HTTP {resp.status_code}: {detail}")
+    return client, resp
+
+
+def iter_sse(lines, deadline: float):
+    """Yield parsed JSON payloads from `data:` lines; enforce the deadline.
+    Streaming matters: DeepSeek keeps a non-streaming connection alive with
+    blank lines while thinking, so a read timeout alone never fires."""
+    for line in lines:
+        if time.monotonic() > deadline:
+            raise GenerationTimeout(f"still generating after {GEN_DEADLINE_S}s")
+        if not line or not line.startswith("data:"):
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            return
+        yield json.loads(data)
+
+
+def _gemini_call(spec: ModelSpec, system: str, user: str, temperature: float) -> Generation:
+    url = (f"https://generativelanguage.googleapis.com/v1beta/models/{spec.model_id}"
+           ":streamGenerateContent?alt=sse")
     body = {
         "systemInstruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": user}]}],
         "generationConfig": {"maxOutputTokens": spec.max_out, "temperature": temperature},
     }
     t0 = time.monotonic()
-    for attempt in range(5):
-        r = httpx.post(url, json=body, timeout=600,
-                       headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]})
-        if r.status_code not in (429, 500, 503):
-            break
-        time.sleep(min(2 ** attempt * 5, 90))
-    if r.status_code >= 400:
-        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
-    d = r.json()
-    cand = (d.get("candidates") or [{}])[0]
-    text = "".join(p.get("text", "") for p in cand.get("content", {}).get("parts", []))
-    u = d.get("usageMetadata", {})
-    out_tokens = u.get("candidatesTokenCount", 0) + u.get("thoughtsTokenCount", 0)  # thinking is billed as output
-    return Generation(text, u.get("promptTokenCount", 0), out_tokens, cand.get("finishReason", ""),
-                      int((time.monotonic() - t0) * 1000), d.get("modelVersion", spec.model_id),
-                      u.get("thoughtsTokenCount", 0))
+    client, resp = _post_with_retry(url, body, {"x-goog-api-key": os.environ["GEMINI_API_KEY"]})
+    text, usage, finish, model = [], {}, "", spec.model_id
+    try:
+        for ev in iter_sse(resp.iter_lines(), t0 + GEN_DEADLINE_S):
+            cand = (ev.get("candidates") or [{}])[0]
+            text += [p.get("text", "") for p in cand.get("content", {}).get("parts", []) if not p.get("thought")]
+            finish = cand.get("finishReason") or finish
+            usage = ev.get("usageMetadata") or usage  # cumulative; last one wins
+            model = ev.get("modelVersion", model)
+    finally:
+        resp.close(); client.close()
+    out = usage.get("candidatesTokenCount", 0) + usage.get("thoughtsTokenCount", 0)  # thinking billed as output
+    return Generation("".join(text), usage.get("promptTokenCount", 0), out, finish,
+                      int((time.monotonic() - t0) * 1000), model, usage.get("thoughtsTokenCount", 0))
 
 
 def _deepseek_call(spec: ModelSpec, system: str, user: str, temperature: float) -> Generation:
-    """OpenAI-compatible chat completions. Thinking mode is DeepSeek's default;
-    reasoning comes back in `reasoning_content` (not part of the answer) but is
-    billed inside completion_tokens."""
-    import httpx
+    """OpenAI-compatible streaming chat completions. Thinking is DeepSeek's
+    default; reasoning arrives as `reasoning_content` deltas (not part of the
+    answer) and is billed inside completion_tokens."""
     body = {"model": spec.model_id, "max_tokens": spec.max_out, "temperature": temperature,
+            "stream": True, "stream_options": {"include_usage": True},
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
     t0 = time.monotonic()
-    for attempt in range(5):
-        r = httpx.post("https://api.deepseek.com/chat/completions", json=body, timeout=900,
-                       headers={"Authorization": f"Bearer {os.environ['DEEPSEEK_API_KEY']}"})
-        if r.status_code not in (429, 500, 502, 503):
-            break
-        time.sleep(min(2 ** attempt * 5, 90))
-    if r.status_code >= 400:
-        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
-    d = r.json()
-    ch = d["choices"][0]
-    u = d.get("usage", {})
-    return Generation(ch["message"].get("content") or "", u.get("prompt_tokens", 0),
-                      u.get("completion_tokens", 0), ch.get("finish_reason", ""),
-                      int((time.monotonic() - t0) * 1000), d.get("model", spec.model_id),
-                      (u.get("completion_tokens_details") or {}).get("reasoning_tokens", 0))
+    client, resp = _post_with_retry("https://api.deepseek.com/chat/completions", body,
+                                    {"Authorization": f"Bearer {os.environ['DEEPSEEK_API_KEY']}"})
+    text, usage, finish, model = [], {}, "", spec.model_id
+    try:
+        for ev in iter_sse(resp.iter_lines(), t0 + GEN_DEADLINE_S):
+            model = ev.get("model", model)
+            for ch in ev.get("choices") or []:
+                text.append((ch.get("delta") or {}).get("content") or "")
+                finish = ch.get("finish_reason") or finish
+            usage = ev.get("usage") or usage
+    finally:
+        resp.close(); client.close()
+    return Generation("".join(text), usage.get("prompt_tokens", 0), usage.get("completion_tokens", 0), finish,
+                      int((time.monotonic() - t0) * 1000), model,
+                      (usage.get("completion_tokens_details") or {}).get("reasoning_tokens", 0))
 
 
 PROVIDERS: dict[str, Callable[[ModelSpec, str, str, float], Generation]] = {
@@ -282,6 +322,13 @@ def run_one(prompt: dict[str, Any], spec: ModelSpec, sample: int, batch_dir: Pat
     }
     try:
         gen = call(spec, SYSTEM_PROMPT, prompt["prompt"], temperature)
+    except GenerationTimeout as exc:
+        # Tokens generated before the cut are probably billed, but the stream
+        # never sent usage: charge the full reservation so the cap stays safe.
+        budget.settle(reserve, reserve)
+        rec.update(status="gen_timeout", error=str(exc), cost_usd=round(reserve, 6),
+                   cost_estimated=True, passed=False, build_passed=False)
+        return rec
     except Exception as exc:  # provider error after retries: record, don't charge
         budget.settle(reserve, 0.0)
         msg = f"{type(exc).__name__}: {exc}"
@@ -305,7 +352,8 @@ def run_one(prompt: dict[str, Any], spec: ModelSpec, sample: int, batch_dir: Pat
         rec.update(status="parse_error", build_passed=False, passed=False)
         return rec
 
-    res = run_build_check(files, mode=sandbox_mode, run_id=f"{batch_dir.name}__{sid}")
+    with BUILD_SLOTS:  # builds are CPU/RAM heavy; generation is just waiting
+        res = run_build_check(files, mode=sandbox_mode, run_id=f"{batch_dir.name}__{sid}")
     # `passed` is the verdict used in analysis: the build must pass AND the
     # output must be complete. A truncated app that happens to build is
     # missing whatever was cut off, so it is not a pass.

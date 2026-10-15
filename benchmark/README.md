@@ -54,6 +54,8 @@ python -m benchmark.generate --batch b1 --budget 20 --sandbox-mode docker
 - **Models:** `haiku` = claude-haiku-4-5-20251001 ($1/$5 per MTok), `sonnet` = claude-sonnet-4-6 ($3/$15). `gemini` is enabled only when `GEMINI_API_KEY`, `GEMINI_MODEL`, `GEMINI_PRICE_IN` and `GEMINI_PRICE_OUT` are all set in `.env`, so the budget is never computed on a guessed price.
 - **Budget:** before each call the worst case (estimated input + 16k output tokens) is reserved; a call that could exceed `--budget` is not made, even with parallel workers. Re-running a batch resumes and counts earlier spend.
 - **Failures are recorded, not dropped:** `parse_error` (no `<file>` blocks), `truncated` (hit the output limit), `provider_error` (retried on resume). Billing/auth errors abort the batch at the first occurrence.
+- **Deadline:** Gemini and DeepSeek are streamed with a 20-minute wall-clock limit (`CODEORCH_GEN_DEADLINE_S`); a sample still generating at the limit is recorded as `gen_timeout` and charged its full worst-case reservation.
+- **Builds:** at most 2 sandbox builds run at once (`CODEORCH_BUILD_CONCURRENCY`); generation calls run in parallel up to `--workers`.
 - **Sampling:** API default temperature (1.0) so the 3 samples per prompt are independent, as pass@k requires.
 - **Output format:** `<file path="...">` blocks instead of JSON, so escaping whole source files in JSON isn't a hidden failure mode.
 
