@@ -41,7 +41,8 @@ from sandbox.runner import run_build_check  # noqa: E402
 
 # Errors that will hit every remaining call too (billing, auth, bad model id):
 # stop the batch instead of recording hundreds of identical failures.
-_FATAL_RE = re.compile(r"credit balance|authentication|invalid x-api-key|permission|not_found_error|API key not valid|"
+_FATAL_RE = re.compile(r"credit balance|exceeded your current quota|Insufficient Balance|authentication|"
+                       r"invalid x-api-key|permission|not_found_error|API key not valid|"
                        r"\b401\b|\b403\b", re.I)
 
 BUILD_SLOTS = threading.Semaphore(int(os.environ.get("CODEORCH_BUILD_CONCURRENCY", "2")))
@@ -445,15 +446,19 @@ def load_prompts(ids: list[str] | None) -> list[dict[str, Any]]:
 
 
 def load_done(results: Path) -> tuple[set[str], float]:
-    done, spent = set(), 0.0
+    """Finished sample ids and total spend. Re-parsed records repeat a
+    sample's cost, so spend counts each API call once: provider errors cost 0,
+    and for every other sample only its latest record is counted."""
+    done: set[str] = set()
+    latest_cost: dict[str, float] = {}
     if results.exists():
         for line in results.read_text().splitlines():
             if line.strip():
                 r = json.loads(line)
-                spent += r.get("cost_usd", 0.0)
                 if r.get("status") != "provider_error":  # retry provider errors on resume
                     done.add(r["sample_id"])
-    return done, spent
+                    latest_cost[r["sample_id"]] = r.get("cost_usd", 0.0)
+    return done, sum(latest_cost.values())
 
 
 def run_batch(batch: str, prompts: list[dict[str, Any]], specs: list[ModelSpec], samples: int,
