@@ -211,3 +211,19 @@ def test_unclosed_block_with_closed_fence_and_trailing_prose():
     assert fmt == "unclosed"
     assert files["app/page.tsx"] == "const s = `hi`;\nexport default function P() { return null; }\n"
     assert files["lib/a.ts"] == "export const a = 1;\n"
+
+
+def test_reparsed_records_do_not_double_count_spend(tmp_path):
+    res = tmp_path / "results.jsonl"
+    res.write_text('{"sample_id": "a", "status": "parse_error", "cost_usd": 1.0}\n'
+                   '{"sample_id": "a", "status": "ok", "cost_usd": 1.0, "reparsed": true}\n'
+                   '{"sample_id": "b", "status": "provider_error", "cost_usd": 0.0}\n')
+    done, spent = g.load_done(res)
+    assert done == {"a"} and spent == 1.0
+
+
+def test_quota_exhaustion_aborts_the_batch(tmp_path):
+    def quota(*a):
+        raise RuntimeError('HTTP 429: {"error": {"message": "You exceeded your current quota, please check your plan"}}')
+    stats = g.run_batch("b", PROMPTS, [SPEC], 1, 1000, 1, 1.0, "local", call=quota, runs_dir=tmp_path)
+    assert stats["aborted"] and "quota" in stats["aborted"]
