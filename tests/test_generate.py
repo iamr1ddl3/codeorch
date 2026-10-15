@@ -159,3 +159,13 @@ def test_generation_timeout_is_recorded_and_charged_conservatively(tmp_path):
     rec = json.loads((tmp_path / "b" / "results.jsonl").read_text())
     assert rec["status"] == "gen_timeout" and rec["passed"] is False and rec["cost_estimated"] is True
     assert stats["spent_usd"] == pytest.approx(g.worst_case_cost(SPEC, g.SYSTEM_PROMPT, "Build a page."), abs=1e-4)
+
+
+def test_budget_cut_drops_later_samples_not_later_prompts(tmp_path):
+    worst = g.worst_case_cost(SPEC, g.SYSTEM_PROMPT, "Build a page.")
+    call = fake_call(tin=10_000, tout=g.MAX_OUTPUT_TOKENS)  # each call costs >= worst case
+    g.run_batch("b", PROMPTS, [SPEC], 2, budget_cap=worst * 3.5, workers=1,
+                temperature=1.0, sandbox_mode="local", call=call, runs_dir=tmp_path)
+    recs = [json.loads(l) for l in (tmp_path / "b" / "results.jsonl").read_text().splitlines()]
+    assert sorted(r["prompt_id"] for r in recs) == ["P0", "P1", "P2"]  # every prompt got sample 0
+    assert {r["sample"] for r in recs} == {0}
