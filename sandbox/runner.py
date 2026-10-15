@@ -248,11 +248,21 @@ def _node_modules() -> Path:
     return Path(override) if override else TEMPLATE_DIR / "node_modules"
 
 
+def _build_env() -> dict[str, str]:
+    """Environment for running generated code: no inherited secrets.
+    `next build` executes page modules, so API keys loaded by the caller
+    (e.g. from .env) must not be visible to it."""
+    keep = ("PATH", "HOME", "LANG", "TMPDIR", "NODE_OPTIONS")
+    env = {k: os.environ[k] for k in keep if k in os.environ}
+    env.update(NEXT_TELEMETRY_DISABLED="1", CI="1")
+    return env
+
+
 def _run_local(app: Path, out_dir: Path) -> None:
     if not _node_modules().exists():
         raise RuntimeError("template deps missing: run `npm ci` in sandbox/template first")
     subprocess.run(["bash", str(CHECK_SH), str(app), str(out_dir)],
-                   capture_output=True, timeout=TIMEOUT_S, check=False)
+                   capture_output=True, timeout=TIMEOUT_S, check=False, env=_build_env())
 
 
 def _run_docker(run_dir: Path, files: dict[str, str], out_dir: Path) -> None:
