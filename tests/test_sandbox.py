@@ -100,3 +100,11 @@ def test_cli_prints_empty_error_messages_without_crashing(capsys, monkeypatch):
     monkeypatch.setattr(runner, "_load_input", lambda p: {"app/page.tsx": "x"})
     assert runner.main(["whatever"]) == 1
     assert "build-failed" in capsys.readouterr().out
+
+
+def test_build_env_carries_no_secrets(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-secret")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-secret2")
+    env = runner._build_env()
+    assert "ANTHROPIC_API_KEY" not in env and "DEEPSEEK_API_KEY" not in env
+    assert "PATH" in env and env["NEXT_TELEMETRY_DISABLED"] == "1"
