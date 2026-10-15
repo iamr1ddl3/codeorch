@@ -71,6 +71,16 @@ _FILE_RE = re.compile(r'<file\s+path="([^"]+)"\s*>\n?(.*?)\n?</file>', re.S)
 _FENCE_RE = re.compile(r"^\s*```[a-zA-Z]*\n(.*)\n```\s*$", re.S)
 
 
+_OPEN_RE = re.compile(r'<file\s+path="([^"]+)"\s*>')
+
+
+def incomplete_files(text: str) -> list[str]:
+    """Paths whose <file> block was opened but never closed (output cut off).
+    parse_files drops these, so the app can build while a feature is missing."""
+    closed = {p for p, _ in _FILE_RE.findall(text or "")}
+    return [p.strip() for p in _OPEN_RE.findall(text or "") if p not in closed]
+
+
 def parse_files(text: str) -> dict[str, str]:
     files: dict[str, str] = {}
     for path, body in _FILE_RE.findall(text or ""):
@@ -91,6 +101,7 @@ class Generation:
     stop_reason: str
     latency_ms: int
     model_id: str
+    reasoning_tokens: int = 0  # part of output_tokens spent thinking (0 if not reported)
 
 
 @dataclass
@@ -100,6 +111,7 @@ class ModelSpec:
     model_id: str
     price_in: float   # USD per 1M input tokens
     price_out: float  # USD per 1M output tokens (incl. thinking tokens)
+    max_out: int = MAX_OUTPUT_TOKENS  # thinking models spend part of this on reasoning
 
     def cost(self, tin: int, tout: int) -> float:
         return tin / 1e6 * self.price_in + tout / 1e6 * self.price_out
@@ -112,7 +124,7 @@ def _anthropic_call(spec: ModelSpec, system: str, user: str, temperature: float)
     with client.messages.stream(
         # anthropic SDK >=1.x no longer takes `temperature`; the API default
         # (1.0) is what we want for independent pass@k samples.
-        model=spec.model_id, max_tokens=MAX_OUTPUT_TOKENS,
+        model=spec.model_id, max_tokens=spec.max_out,
         system=system, messages=[{"role": "user", "content": user}],
     ) as stream:
         msg = stream.get_final_message()
@@ -127,7 +139,7 @@ def _gemini_call(spec: ModelSpec, system: str, user: str, temperature: float) ->
     body = {
         "systemInstruction": {"parts": [{"text": system}]},
         "contents": [{"role": "user", "parts": [{"text": user}]}],
-        "generationConfig": {"maxOutputTokens": MAX_OUTPUT_TOKENS, "temperature": temperature},
+        "generationConfig": {"maxOutputTokens": spec.max_out, "temperature": temperature},
     }
     t0 = time.monotonic()
     for attempt in range(5):
@@ -135,33 +147,82 @@ def _gemini_call(spec: ModelSpec, system: str, user: str, temperature: float) ->
                        headers={"x-goog-api-key": os.environ["GEMINI_API_KEY"]})
         if r.status_code not in (429, 500, 503):
             break
-        time.sleep(2 ** attempt * 3)
-    r.raise_for_status()
+        time.sleep(min(2 ** attempt * 5, 90))
+    if r.status_code >= 400:
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
     d = r.json()
     cand = (d.get("candidates") or [{}])[0]
     text = "".join(p.get("text", "") for p in cand.get("content", {}).get("parts", []))
     u = d.get("usageMetadata", {})
     out_tokens = u.get("candidatesTokenCount", 0) + u.get("thoughtsTokenCount", 0)  # thinking is billed as output
     return Generation(text, u.get("promptTokenCount", 0), out_tokens, cand.get("finishReason", ""),
-                      int((time.monotonic() - t0) * 1000), d.get("modelVersion", spec.model_id))
+                      int((time.monotonic() - t0) * 1000), d.get("modelVersion", spec.model_id),
+                      u.get("thoughtsTokenCount", 0))
+
+
+def _deepseek_call(spec: ModelSpec, system: str, user: str, temperature: float) -> Generation:
+    """OpenAI-compatible chat completions. Thinking mode is DeepSeek's default;
+    reasoning comes back in `reasoning_content` (not part of the answer) but is
+    billed inside completion_tokens."""
+    import httpx
+    body = {"model": spec.model_id, "max_tokens": spec.max_out, "temperature": temperature,
+            "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
+    t0 = time.monotonic()
+    for attempt in range(5):
+        r = httpx.post("https://api.deepseek.com/chat/completions", json=body, timeout=900,
+                       headers={"Authorization": f"Bearer {os.environ['DEEPSEEK_API_KEY']}"})
+        if r.status_code not in (429, 500, 502, 503):
+            break
+        time.sleep(min(2 ** attempt * 5, 90))
+    if r.status_code >= 400:
+        raise RuntimeError(f"HTTP {r.status_code}: {r.text[:300]}")
+    d = r.json()
+    ch = d["choices"][0]
+    u = d.get("usage", {})
+    return Generation(ch["message"].get("content") or "", u.get("prompt_tokens", 0),
+                      u.get("completion_tokens", 0), ch.get("finish_reason", ""),
+                      int((time.monotonic() - t0) * 1000), d.get("model", spec.model_id),
+                      (u.get("completion_tokens_details") or {}).get("reasoning_tokens", 0))
 
 
 PROVIDERS: dict[str, Callable[[ModelSpec, str, str, float], Generation]] = {
-    "anthropic": _anthropic_call, "gemini": _gemini_call,
+    "anthropic": _anthropic_call, "gemini": _gemini_call, "deepseek": _deepseek_call,
 }
 
 
+# Thinking models spend part of the output allowance on reasoning; at 32k,
+# 3 of 5 dry-run samples were cut off (one returned no code at all).
+THINKING_MAX_OUT = int(os.environ.get("CODEORCH_GEN_THINKING_MAX_TOKENS", "64000"))
+
+
 def model_specs() -> dict[str, ModelSpec]:
-    """List prices from platform.claude.com/docs/en/about-claude/pricing (2026-10-15).
-    Gemini has no default: set GEMINI_MODEL, GEMINI_PRICE_IN and GEMINI_PRICE_OUT
-    from Google's current price page, so the budget cap is never computed on a guess."""
-    specs = {
-        "haiku": ModelSpec("haiku", "anthropic", "claude-haiku-4-5-20251001", 1.00, 5.00),
-        "sonnet": ModelSpec("sonnet", "anthropic", "claude-sonnet-4-6", 3.00, 15.00),
-    }
-    if all(os.environ.get(k) for k in ("GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_PRICE_IN", "GEMINI_PRICE_OUT")):
-        specs["gemini"] = ModelSpec("gemini", "gemini", os.environ["GEMINI_MODEL"],
-                                    float(os.environ["GEMINI_PRICE_IN"]), float(os.environ["GEMINI_PRICE_OUT"]))
+    """Models available given the keys in the environment.
+
+    List prices in USD per 1M tokens, checked 2026-10-15:
+      Anthropic  platform.claude.com/docs/en/about-claude/pricing
+      Gemini     ai.google.dev/gemini-api/docs/pricing  (3.8 Flash: promo price
+                 through 2026-12-31, then $1.50 / $7.50; thinking billed as output)
+      DeepSeek   api-docs.deepseek.com/quick_start/pricing  (peak, cache-miss
+                 rates; off-peak is half, so recorded costs are upper bounds)
+    Override model/price with <KEY>_MODEL / <KEY>_PRICE_IN / <KEY>_PRICE_OUT.
+    """
+    def env(key: str, model: str, pin: float, pout: float) -> tuple[str, float, float]:
+        k = key.upper()
+        return (os.environ.get(f"{k}_MODEL", model),
+                float(os.environ.get(f"{k}_PRICE_IN", pin)), float(os.environ.get(f"{k}_PRICE_OUT", pout)))
+
+    table = [  # key, provider, required env var, default model, in, out, max_out
+        ("haiku", "anthropic", "ANTHROPIC_API_KEY", "claude-haiku-4-5-20251001", 1.00, 5.00, MAX_OUTPUT_TOKENS),
+        ("sonnet", "anthropic", "ANTHROPIC_API_KEY", "claude-sonnet-4-6", 3.00, 15.00, MAX_OUTPUT_TOKENS),
+        ("gemini", "gemini", "GEMINI_API_KEY", "gemini-3.8-flash", 0.75, 3.75, THINKING_MAX_OUT),
+        ("deepseek", "deepseek", "DEEPSEEK_API_KEY", "deepseek-flash", 0.30, 1.20, THINKING_MAX_OUT),
+        ("deepseek_pro", "deepseek", "DEEPSEEK_API_KEY", "deepseek-v4-pro", 1.32, 3.96, THINKING_MAX_OUT),
+    ]
+    specs = {}
+    for key, provider, need, model, pin, pout, max_out in table:
+        if os.environ.get(need):
+            m, i, o = env(key, model, pin, pout)
+            specs[key] = ModelSpec(key, provider, m, i, o, max_out)
     return specs
 
 
@@ -191,7 +252,7 @@ class Budget:
 
 def worst_case_cost(spec: ModelSpec, system: str, user: str) -> float:
     est_in = (len(system) + len(user)) // 3 + 50  # chars/3 over-estimates tokens for English
-    return spec.cost(est_in, MAX_OUTPUT_TOKENS)
+    return spec.cost(est_in, spec.max_out)
 
 
 # --------------------------------------------------------------------------- #
@@ -233,18 +294,24 @@ def run_one(prompt: dict[str, Any], spec: ModelSpec, sample: int, batch_dir: Pat
     raw_path.parent.mkdir(parents=True, exist_ok=True)
     raw_path.write_text(gen.text)
     files = parse_files(gen.text)
-    truncated = gen.stop_reason in ("max_tokens", "MAX_TOKENS")
+    incomplete = incomplete_files(gen.text)
+    truncated = gen.stop_reason in ("max_tokens", "MAX_TOKENS", "length")
     rec.update(model_id=gen.model_id, input_tokens=gen.input_tokens, output_tokens=gen.output_tokens,
                cost_usd=round(cost, 6), gen_latency_ms=gen.latency_ms, stop_reason=gen.stop_reason,
-               truncated=truncated, n_files=len(files), raw=_rel(raw_path))
+               reasoning_tokens=gen.reasoning_tokens, truncated=truncated, incomplete_files=incomplete,
+               n_files=len(files), raw=_rel(raw_path))
 
     if not files:
-        rec.update(status="parse_error", build_passed=False)
+        rec.update(status="parse_error", build_passed=False, passed=False)
         return rec
 
     res = run_build_check(files, mode=sandbox_mode, run_id=f"{batch_dir.name}__{sid}")
+    # `passed` is the verdict used in analysis: the build must pass AND the
+    # output must be complete. A truncated app that happens to build is
+    # missing whatever was cut off, so it is not a pass.
     rec.update(
-        status="ok", build_status=res.status, build_passed=res.passed, build_errors=res.total_errors,
+        status="ok", build_status=res.status, build_passed=res.passed,
+        passed=bool(res.passed and not truncated and not incomplete), build_errors=res.total_errors,
         step_passed={s.step: s.passed for s in res.steps},
         step_errors={s.step: s.error_count for s in res.steps},
         rejected_files=[r["path"] for r in res.rejected_files],
@@ -290,7 +357,7 @@ def run_batch(batch: str, prompts: list[dict[str, Any]], specs: list[ModelSpec],
     budget = Budget(budget_cap, spent)
     (batch_dir / "config.json").write_text(json.dumps({
         "models": {s.key: s.__dict__ for s in specs}, "samples": samples, "budget_usd": budget_cap,
-        "temperature": temperature, "max_output_tokens": MAX_OUTPUT_TOKENS,
+        "temperature": temperature, "anthropic_temperature": "API default (1.0)",
         "system_prompt": SYSTEM_PROMPT, "prompt_ids": [p["id"] for p in prompts],
     }, indent=2))
 
@@ -323,7 +390,8 @@ def run_batch(batch: str, prompts: list[dict[str, Any]], specs: list[ModelSpec],
             if rec.get("fatal") and not stats["aborted"]:
                 stats["aborted"] = rec["error"][:300]
                 print(f"ABORTING batch — non-retryable provider error: {rec['error'][:200]}", flush=True)
-            mark = "PASS" if rec.get("build_passed") else rec.get("build_status", rec["status"]).upper()
+            mark = ("PASS" if rec.get("passed") else
+                    "TRUNC+BUILT" if rec.get("build_passed") else rec.get("build_status", rec["status"]).upper())
             print(f"[{stats['completed']}/{len(jobs)}] {rec['sample_id']:<28} {mark:<13} "
                   f"${rec.get('cost_usd', 0):.4f}  spent ${budget.spent:.2f}/{budget_cap:.2f}", flush=True)
 
@@ -334,7 +402,7 @@ def run_batch(batch: str, prompts: list[dict[str, Any]], specs: list[ModelSpec],
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Generate + build-check benchmark apps.")
     ap.add_argument("--batch", required=True, help="run name; re-use it to resume")
-    ap.add_argument("--models", default="haiku,sonnet,gemini")
+    ap.add_argument("--models", default="haiku,sonnet,gemini,deepseek")
     ap.add_argument("--prompts", default="", help="comma-separated ids (default: all 30)")
     ap.add_argument("--samples", type=int, default=3)
     ap.add_argument("--budget", type=float, default=20.0, help="hard USD cap for this batch")
@@ -354,7 +422,7 @@ def main(argv: list[str] | None = None) -> int:
         if key in available:
             specs.append(available[key])
         else:
-            print(f"skipping model '{key}': not configured (see model_specs docstring)")
+            print(f"skipping model '{key}': its API key is not set")
     if not specs:
         return 1
     stats = run_batch(args.batch, load_prompts([i for i in args.prompts.split(",") if i]), specs,

@@ -100,11 +100,20 @@ def test_provider_error_is_recorded_free_and_retried_on_resume(tmp_path):
     assert len(call.calls) == 1
 
 
-def test_gemini_needs_explicit_model_and_price(monkeypatch):
-    for k in ("GEMINI_API_KEY", "GEMINI_MODEL", "GEMINI_PRICE_IN", "GEMINI_PRICE_OUT"):
+def test_models_enabled_only_by_their_keys(monkeypatch):
+    for k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY", "GEMINI_MODEL", "GEMINI_PRICE_IN"):
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("GEMINI_API_KEY", "x")
-    assert "gemini" not in g.model_specs()
+    monkeypatch.setenv("GEMINI_PRICE_IN", "2.5")
+    specs = g.model_specs()
+    assert set(specs) == {"gemini"}
+    assert specs["gemini"].price_in == 2.5 and specs["gemini"].max_out == g.THINKING_MAX_OUT
+
+
+def test_length_finish_reason_counts_as_truncation(tmp_path):
+    g.run_batch("b", PROMPTS[:1], [SPEC], 1, 1000, 1, 1.0, "local",
+                call=fake_call(stop="length"), runs_dir=tmp_path)
+    assert json.loads((tmp_path / "b" / "results.jsonl").read_text())["truncated"] is True
 
 
 def test_billing_error_aborts_the_batch(tmp_path):
@@ -115,3 +124,19 @@ def test_billing_error_aborts_the_batch(tmp_path):
         raise RuntimeError("Error code: 400 - Your credit balance is too low to access the Anthropic API.")
     stats = g.run_batch("b", PROMPTS, [SPEC], 2, 1000, 1, 1.0, "local", call=broke, runs_dir=tmp_path)
     assert len(calls) == 1 and stats["aborted"] and "credit balance" in stats["aborted"]
+
+
+def test_truncated_output_that_still_builds_is_not_a_pass(tmp_path):
+    # The cut-off file is dropped by the parser, the rest builds: must not count as passed.
+    text = GOOD + '\n<file path="components/InvoiceForm.tsx">\nexport function InvoiceForm() {\n  return ('
+    g.run_batch("b", PROMPTS[:1], [SPEC], 1, 1000, 1, 1.0, "local",
+                call=fake_call(text=text, stop="length"), runs_dir=tmp_path)
+    rec = json.loads((tmp_path / "b" / "results.jsonl").read_text())
+    assert rec["build_passed"] is True and rec["passed"] is False
+    assert rec["incomplete_files"] == ["components/InvoiceForm.tsx"]
+
+
+def test_complete_output_that_builds_passes(tmp_path):
+    g.run_batch("b", PROMPTS[:1], [SPEC], 1, 1000, 1, 1.0, "local", call=fake_call(), runs_dir=tmp_path)
+    rec = json.loads((tmp_path / "b" / "results.jsonl").read_text())
+    assert rec["passed"] is True and rec["incomplete_files"] == []
