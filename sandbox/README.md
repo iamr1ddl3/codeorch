@@ -74,8 +74,11 @@ python -m pytest tests/test_sandbox.py -q
 
 Unit tests (path safety, parsing, empty output) run anywhere. Two integration tests build `tests/fixtures/sandbox/good_pricing` (must pass all three steps) and `broken_app` (a missing module, a type error, a conditional hook and a `package.json` overwrite — each must be caught by the right step). They skip if the template deps aren't installed.
 
+## Verified
+
+Both fixtures give identical results in `local` and `docker` mode (Docker Desktop on macOS, Apple silicon): `good_pricing` passes all three steps (~9.6 s in Docker); `broken_app` fails with 2 tsc, 1 ESLint and 1 build error, and its `package.json` overwrite is rejected.
+
 ## Not yet
 
 - Not wired into the orchestrator yet: the Coder still targets Python. Next step is a Next.js Coder prompt and a `build` stage between Coder and the quality gate, with build errors feeding the retry loop.
 - No runtime checks yet (Playwright render, axe-core accessibility, Web Vitals). Those come after the error analysis shows which failure modes matter.
-- Docker mode is written but was not exercised in the environment this was built in (no Docker daemon); run `docker build` + the CLI once on your machine to confirm.
