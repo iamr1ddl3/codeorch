@@ -409,7 +409,10 @@ def run_batch(batch: str, prompts: list[dict[str, Any]], specs: list[ModelSpec],
         "system_prompt": SYSTEM_PROMPT, "prompt_ids": [p["id"] for p in prompts],
     }, indent=2))
 
-    jobs = [(p, s, k) for p in prompts for s in specs for k in range(samples)
+    # Sample-major order: every (prompt, model) gets sample 0 before any gets
+    # sample 1. If the budget runs out, the cut removes later samples evenly
+    # instead of dropping the last (hardest, high-tier) prompts.
+    jobs = [(p, s, k) for k in range(samples) for p in prompts for s in specs
             if f"{p['id']}__{s.key}__s{k}" not in done]
     write_lock = threading.Lock()
     stop = threading.Event()
