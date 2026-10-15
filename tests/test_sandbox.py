@@ -82,3 +82,21 @@ def test_broken_fixture_is_caught_by_every_step():
     assert by["build"].error_count == 1  # one root cause: missing 'recharts'
     assert res.rejected_files == [{"path": "package.json", "reason": "protected toolchain file"}]
     assert (Path(res.run_dir) / "result.json").exists()
+
+
+def test_steps_that_never_ran_are_not_counted_as_errors(tmp_path):
+    # Harness failure (e.g. container died before check.sh): no steps.jsonl.
+    steps = runner._collect(tmp_path, "")
+    assert [s.exit_code for s in steps] == [None, None, None]
+    assert all(s.error_count == 0 and s.errors == [] for s in steps)
+
+
+def test_cli_prints_empty_error_messages_without_crashing(capsys, monkeypatch):
+    fake = runner.BuildResult(
+        run_id="x", mode="docker", passed=False, status="failed",
+        steps=[runner.StepResult("build", 1, 10, False, 1, 0, [{"code": "build-failed", "message": ""}])],
+        total_errors=1, files_written=[], rejected_files=[], layout="app", wall_ms=1, run_dir="/tmp/x")
+    monkeypatch.setattr(runner, "run_build_check", lambda *a, **k: fake)
+    monkeypatch.setattr(runner, "_load_input", lambda p: {"app/page.tsx": "x"})
+    assert runner.main(["whatever"]) == 1
+    assert "build-failed" in capsys.readouterr().out
