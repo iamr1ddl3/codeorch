@@ -56,3 +56,16 @@ raw/
 
 # init-wiki-skeleton backups
 *.pre-wiki.bak.*
+
+# Private interview-prep material (not for public push)
+CodeOrch-*.md
+CodeOrch-*.html
+codeorch-architecture.gif
+
+# Code-review graph cache
+.code-review-graph/
+
+# Build sandbox: installed deps + per-run workspaces/logs
+sandbox/template/node_modules/
+sandbox/template/.next/
+sandbox/runs/

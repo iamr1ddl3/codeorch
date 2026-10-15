@@ -1,7 +1,5 @@
 <div align="center">
 
-<!-- ponytail: hero banner is a placeholder — drop a real 1280×320 PNG at docs/banner.png to replace this line -->
-<img src="docs/banner.png" alt="CodeOrch" width="100%" onerror="this.style.display='none'"/>
 
 # 🛠️ CodeOrch
 
@@ -135,16 +133,33 @@ Headline result on the 13-run benchmark:
 
 | Variant | Mean score | Mean latency | Mean cost | Pass rate |
 |---|---|---|---|---|
-| Haiku-weighted | 0.903 | 7.4s | $0.00428 | 92% |
-| **Haiku-verdict-only** | **0.915** | **1.9s** | **$0.00189** | **100%** |
-| Sonnet-verdict-only | 0.940 | 4.7s | $0.00610 | 92% |
+| Haiku-weighted | 0.903 | 7.4s | $0.00428 | 92% (12/13) |
+| **Haiku-verdict-only** | **0.915** | **1.9s** | **$0.00189** | **92% (12/13)** |
+| Sonnet-verdict-only | 0.949 | 2.5s | $0.00657 | 92% (12/13)¹ |
 
-Verdict-only on Haiku won on all three axes (3.9× faster, 44% cheaper, slightly higher score). The production gate was switched to verdict-only as a result; `gate_variants.py` keeps the weighted prompt accessible for retry/escalate paths where decomposed scoring aids root-cause.
+<sub>Mean LLM latency and cost per gate call, computed from `routerbench/results.jsonl`. ¹ Sonnet returned prose instead of JSON on 1/13 runs; score, latency and cost are averaged over the 12 parsed runs. At n=13 the score differences are within noise — the latency and cost differences are the robust result.</sub>
+
+Verdict-only on Haiku beat the weighted rubric on speed and cost (3.9× faster, 56% cheaper) with no loss in score. The production gate was switched to verdict-only as a result; `gate_variants.py` keeps the weighted prompt accessible for retry/escalate paths where decomposed scoring aids root-cause.
 
 ```bash
 python routerbench/run_benchmark.py     # replays 13 runs × 3 variants → results.jsonl
 python routerbench/generate_report.py   # renders routerbench_report.html
 ```
+
+---
+
+## 🧪 Build sandbox — execution-based checks
+
+`sandbox/` checks generated **Next.js + TypeScript** code by running it, not by asking an LLM about it: `tsc --noEmit` → ESLint (`next/core-web-vitals` + `next/typescript`) → `next build`, against a pinned Next.js 15 / React 19 / Tailwind 4 template, in a Docker container with no network. All three steps always run and every log is kept, so each sample gives three independent signals for failure analysis.
+
+```bash
+cd sandbox/template && npm ci && cd ../..
+docker build -t codeorch-sandbox sandbox/
+python -m sandbox.runner path/to/generated_app      # → PASSED / FAILED with per-step errors
+python -m pytest tests/test_sandbox.py -q
+```
+
+Not yet wired into the orchestrator (the Coder still targets Python). Details and limits: [`sandbox/README.md`](sandbox/README.md).
 
 ---
 
@@ -178,7 +193,12 @@ codeorch/
 │   ├── run_benchmark.py        replay-based A/B runner across gate variants
 │   ├── generate_report.py      plotly HTML report generator
 │   └── routerbench_report.html headline result page
-├── tests/                      smoke + integration tests
+├── sandbox/
+│   ├── runner.py               build-check one generated app: tsc → ESLint → next build
+│   ├── check.sh                the three steps (same script locally and in Docker)
+│   ├── Dockerfile              isolated image: pinned template, deps pre-installed, non-root
+│   └── template/               Next.js 15 + TS + Tailwind 4 app the output is overlaid on
+├── tests/                      smoke + integration tests (incl. test_sandbox.py + fixtures)
 ├── requirements.txt
 └── .env.example
 ```
@@ -194,7 +214,7 @@ codeorch/
 - **Observability:** Langfuse (self-hosted or cloud), one trace per pipeline run with per-stage spans.
 - **Evals:** Promptfoo (golden dataset, JSON-Schema assertions), in-tree A/B harness for RouterBench.
 - **Dashboard:** Streamlit, 8-SLI live view from Langfuse + Postgres.
-- **Dev infra:** docker-compose for Postgres + pgvector + Langfuse local stack.
+- **Dev infra:** docker-compose for Postgres + pgvector. Langfuse runs separately (cloud or your own self-hosted instance).
 
 </details>
 
@@ -209,15 +229,16 @@ codeorch/
 - Single-language target (Python code generation). Multi-language would need stage-specific Tester adaptations.
 - RouterBench n=13 baseline runs — small sample, results directionally robust but worth re-running at n≥50 before treating as definitive.
 - No production-grade auth on the dashboard (Streamlit default). Add reverse-proxy auth before exposing publicly.
-- Quality gate is LLM-as-judge; for high-stakes correctness use unit-test verification (already wired in Tester) as the primary signal and the gate as triage.
-- Self-correction loop is one-shot — gate failure triggers one retry, not iterative refinement. Iterative loop is a roadmap item.
+- Quality gate is LLM-as-judge. Tester **writes** test files but the Python pipeline does not yet **execute** them, so the gate is currently the only pass/fail signal. The new `sandbox/` build checker (tsc → ESLint → `next build`) is the first step toward execution-based verification; see [Build sandbox](#-build-sandbox--execution-based-checks).
+- Self-correction is bounded: up to 2 Coder retries (`MAX_RETRIES=2`), stopping early if a retry fails to improve the gate score. Repairs are driven by the gate's `issues`, not by real build or test errors yet.
 
 ---
 
 ## 📚 Further Reading
 
-- `DESIGN.md` — full architecture decisions with rationale.
-- `ARCHITECTURE.md` — Mermaid diagrams of agent + store topology.
+- `agents/models.py` — routing table with the per-agent rationale and the RouterBench gate decision.
+- `agents/orchestrator.py` — the full lifecycle and retry/escalate logic.
+- `sandbox/README.md` — how the execution-based build checker works.
 
 ## License
 
