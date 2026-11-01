@@ -18,7 +18,7 @@
 
 <br/>
 
-[**Quick Start**](#-quick-start) · [**Architecture**](#-architecture) · [**8 SLIs**](#-the-8-slis-live-on-the-dashboard) · [**RouterBench**](#-routerbench--ab-benchmark-for-the-quality-gate) · [**Known Limits**](#-scope--known-limits)
+[**Codegen benchmark**](#-codegen-benchmark--in-plain-words) · [**Quick Start**](#-quick-start) · [**Architecture**](#-architecture) · [**8 SLIs**](#-the-8-slis-live-on-the-dashboard) · [**RouterBench**](#-routerbench--ab-benchmark-for-the-quality-gate) · [**Known Limits**](#-scope--known-limits)
 
 </div>
 
@@ -29,6 +29,49 @@
 Stateless agents with an externalized context store. One natural-language spec in, working / tested / documented code out — via a planner, parallel coder + tester, an LLM-as-judge quality gate with self-correction, a reviewer, and a documenter. Multi-model routing across Opus 4.7 / Sonnet 4.6 / Haiku 4.5. Operational visibility through an 8-SLI Streamlit dashboard.
 
 Every agent reads inputs from pgvector and writes outputs back. **No in-memory chaining.** A failure mid-pipeline writes a `status='failure'` partial-state record — the next agent sees `read_stage(run_id, ...) is None` and the orchestrator decides retry vs escalate.
+
+---
+
+## 🎓 Codegen benchmark — in plain words
+
+> **Status (2026-11):** DeepSeek and GLM runs complete; Gemini partial; Claude not yet run. Code on branch `feat/build-sandbox`.
+
+**The question:** when you ask an AI model to *build a web app from one sentence* ("a pricing page with 3 tiers and a toggle"), which model gives you an app that actually works — and what does each working app cost?
+
+**Think of it as an exam:**
+
+| Exam part | In this repo |
+|---|---|
+| **Exam paper** — 30 app requests (10 easy · 10 medium · 10 hard), half from the public [WebGen-Bench](https://huggingface.co/datasets/luzimu/WebGen-Bench) dataset, half modelled on real prompt-to-app product prompts | `benchmark/prompts.jsonl` |
+| **Students** — AI models (DeepSeek, GLM, Gemini, Claude); each answers every request 3 times | `benchmark/generate.py` |
+| **Marking** — not "does the code look right?" but "does it actually build?": type-check, lint and `next build` in an isolated Docker container | `sandbox/` |
+| **Report card** — pass rate (with confidence intervals), cost per *working* app, speed, and *why* answers failed | `benchmark/analyze.py` → `benchmark/runs/<batch>/report.md` |
+
+**Results so far** (batch `b1`, Next.js 15 + TypeScript + Tailwind, 30 prompts × 3 attempts):
+
+| Model | Apps | Built on 1st try (95% CI) | Built within 3 tries | Cost per working app | Main way it fails |
+|---|---|---|---|---|---|
+| DeepSeek V4.1 Flash | 90 | **59%** (43–74%) | 70% | ≈ $0.05 | runs out of output space on big, open-ended requests |
+| GLM-5.3-Flash | 90 | **27%** (13–41%) | 37% | ≈ $0.11 | spends 87% of its output "thinking"; a third of answers contain no code at all |
+| Gemini 3.8 Flash | 8 | 75% (38–100%) | — | ≈ $0.12 | too few samples yet |
+| Claude Haiku / Sonnet | — | not run yet | | | |
+
+**What it shows so far:**
+- **Cheapest per token ≠ cheapest per working app.** GLM-5.3-Flash costs half of DeepSeek per token but about twice as much per app that builds (DeepSeek beats it on the same prompts: 30 wins vs 1, exact McNemar p ≈ 3×10⁻⁸).
+- **Clear requests matter more than model choice.** Specific, scoped requests passed far more often than open-ended "build a website for X" ones (DeepSeek 40/45 vs 13/45).
+- **Thinking-heavy budget models fail by running out of room, not by writing bad code** — a routing problem you can measure and fix.
+
+**Run it yourself** (macOS: Homebrew Python needs a virtual environment):
+
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+python -m pip install httpx python-dotenv anthropic
+docker build -t codeorch-sandbox sandbox/          # Docker Desktop must be running
+python -m benchmark.generate --batch b1 --models deepseek --budget 5 --sandbox-mode docker
+python -m benchmark.analyze --batch b1             # → benchmark/runs/b1/report.md
+```
+
+API keys go in `.env` (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `DEEPSEEK_API_KEY`, `GLM_API_KEY`); a model is used only if its key is set. The `--budget` cap is enforced before every call, and re-running the same command resumes where it stopped. Details: [`benchmark/README.md`](benchmark/README.md).
 
 ---
 
