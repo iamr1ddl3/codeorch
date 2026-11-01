@@ -242,3 +242,22 @@ def test_glm_models_enabled_by_glm_key(monkeypatch):
 
 def test_zai_insufficient_balance_is_fatal():
     assert g._FATAL_RE.search('HTTP 429: {"error":{"code":"1113","message":"Insufficient balance or no resource package"}}')
+
+
+def test_load_env_without_dotenv(tmp_path, monkeypatch):
+    import builtins
+    real_import = builtins.__import__
+    def no_dotenv(name, *a, **k):
+        if name == "dotenv":
+            raise ImportError
+        return real_import(name, *a, **k)
+    monkeypatch.setattr(builtins, "__import__", no_dotenv)
+    monkeypatch.delenv("GLM_API_KEY", raising=False)
+    monkeypatch.setenv("KEEP_ME", "original")
+    env = tmp_path / ".env"
+    env.write_text('# comment\nGLM_API_KEY="abc123"\nexport OTHER=x\nKEEP_ME=changed\n')
+    g.load_env(env)
+    import os
+    assert os.environ["GLM_API_KEY"] == "abc123" and os.environ["OTHER"] == "x"
+    assert os.environ["KEEP_ME"] == "original"  # never overrides existing env
+    monkeypatch.delenv("OTHER", raising=False)
