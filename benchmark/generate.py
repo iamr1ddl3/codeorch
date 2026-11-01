@@ -41,7 +41,8 @@ from sandbox.runner import run_build_check  # noqa: E402
 
 # Errors that will hit every remaining call too (billing, auth, bad model id):
 # stop the batch instead of recording hundreds of identical failures.
-_FATAL_RE = re.compile(r"credit balance|exceeded your current quota|Insufficient Balance|authentication|"
+_FATAL_RE = re.compile(r"credit balance|exceeded your current quota|Insufficient Balance|insufficient balance|"
+                       r"\"code\":\s*\"?1113|authentication|"
                        r"invalid x-api-key|permission|not_found_error|API key not valid|"
                        r"\b401\b|\b403\b", re.I)
 
@@ -262,16 +263,25 @@ def _gemini_call(spec: ModelSpec, system: str, user: str, temperature: float) ->
                       int((time.monotonic() - t0) * 1000), model, usage.get("thoughtsTokenCount", 0))
 
 
-def _deepseek_call(spec: ModelSpec, system: str, user: str, temperature: float) -> Generation:
-    """OpenAI-compatible streaming chat completions. Thinking is DeepSeek's
-    default; reasoning arrives as `reasoning_content` deltas (not part of the
-    answer) and is billed inside completion_tokens."""
+OPENAI_COMPAT = {
+    # provider: (chat-completions URL, API-key env var)
+    "deepseek": ("https://api.deepseek.com/chat/completions", "DEEPSEEK_API_KEY"),
+    # Z.ai pay-as-you-go endpoint. Deliberately NOT /api/coding/paas/v4: the
+    # GLM Coding Plan is meant for coding tools, not benchmark scripts.
+    "glm": ("https://api.z.ai/api/paas/v4/chat/completions", "GLM_API_KEY"),
+}
+
+
+def _openai_compat_call(spec: ModelSpec, system: str, user: str, temperature: float) -> Generation:
+    """OpenAI-compatible streaming chat completions (DeepSeek, GLM). Both think
+    by default; reasoning arrives as `reasoning_content` deltas (not part of
+    the answer) and is billed inside completion_tokens."""
+    url, key_env = OPENAI_COMPAT[spec.provider]
     body = {"model": spec.model_id, "max_tokens": spec.max_out, "temperature": temperature,
             "stream": True, "stream_options": {"include_usage": True},
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}]}
     t0 = time.monotonic()
-    client, resp = _post_with_retry("https://api.deepseek.com/chat/completions", body,
-                                    {"Authorization": f"Bearer {os.environ['DEEPSEEK_API_KEY']}"})
+    client, resp = _post_with_retry(url, body, {"Authorization": f"Bearer {os.environ[key_env]}"})
     text, usage, finish, model = [], {}, "", spec.model_id
     try:
         for ev in iter_sse(resp.iter_lines(), t0 + GEN_DEADLINE_S):
@@ -288,7 +298,8 @@ def _deepseek_call(spec: ModelSpec, system: str, user: str, temperature: float) 
 
 
 PROVIDERS: dict[str, Callable[[ModelSpec, str, str, float], Generation]] = {
-    "anthropic": _anthropic_call, "gemini": _gemini_call, "deepseek": _deepseek_call,
+    "anthropic": _anthropic_call, "gemini": _gemini_call,
+    "deepseek": _openai_compat_call, "glm": _openai_compat_call,
 }
 
 
@@ -306,6 +317,7 @@ def model_specs() -> dict[str, ModelSpec]:
                  through 2026-12-31, then $1.50 / $7.50; thinking billed as output)
       DeepSeek   api-docs.deepseek.com/quick_start/pricing  (peak, cache-miss
                  rates; off-peak is half, so recorded costs are upper bounds)
+      GLM        docs.z.ai/guides/overview/pricing  (checked 2026-11-01; uncached input)
     Override model/price with <KEY>_MODEL / <KEY>_PRICE_IN / <KEY>_PRICE_OUT.
     """
     def env(key: str, model: str, pin: float, pout: float) -> tuple[str, float, float]:
@@ -319,6 +331,8 @@ def model_specs() -> dict[str, ModelSpec]:
         ("gemini", "gemini", "GEMINI_API_KEY", "gemini-3.8-flash", 0.75, 3.75, THINKING_MAX_OUT),
         ("deepseek", "deepseek", "DEEPSEEK_API_KEY", "deepseek-flash", 0.30, 1.20, THINKING_MAX_OUT),
         ("deepseek_pro", "deepseek", "DEEPSEEK_API_KEY", "deepseek-v4-pro", 1.32, 3.96, THINKING_MAX_OUT),
+        ("glm_flash", "glm", "GLM_API_KEY", "glm-5.3-flash", 0.15, 0.50, THINKING_MAX_OUT),
+        ("glm", "glm", "GLM_API_KEY", "glm-5.3", 1.40, 4.40, THINKING_MAX_OUT),
     ]
     specs = {}
     for key, provider, need, model, pin, pout, max_out in table:
