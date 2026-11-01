@@ -568,6 +568,30 @@ def reparse_batch(batch: str, sandbox_mode: str | None, runs_dir: Path | None = 
     return stats
 
 
+def load_env(path: Path) -> None:
+    """Load KEY=VALUE lines from .env into os.environ without overriding
+    variables already set. Uses python-dotenv when installed, otherwise a
+    minimal parser — a missing package must never silently drop the keys."""
+    if not path.exists():
+        print(f"note: {path} not found; using environment variables only")
+        return
+    try:
+        from dotenv import load_dotenv
+        load_dotenv(path)
+        return
+    except ImportError:
+        pass
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, val = line.removeprefix("export ").partition("=")
+        key, val = key.strip(), val.strip()
+        if len(val) >= 2 and val[0] == val[-1] and val[0] in "\"'":
+            val = val[1:-1]
+        os.environ.setdefault(key, val)
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Generate + build-check benchmark apps.")
     ap.add_argument("--batch", required=True, help="run name; re-use it to resume")
@@ -585,11 +609,7 @@ def main(argv: list[str] | None = None) -> int:
         print(json.dumps(reparse_batch(args.batch, args.sandbox_mode)))
         return 0
 
-    try:
-        from dotenv import load_dotenv
-        load_dotenv(ROOT / ".env")
-    except ImportError:
-        pass
+    load_env(ROOT / ".env")
     available = model_specs()
     specs = []
     for key in [m.strip() for m in args.models.split(",") if m.strip()]:
@@ -599,6 +619,12 @@ def main(argv: list[str] | None = None) -> int:
             print(f"skipping model '{key}': its API key is not set")
     if not specs:
         return 1
+    if any(sp.provider != "anthropic" for sp in specs):
+        try:
+            import httpx  # noqa: F401  (Gemini / DeepSeek / GLM clients)
+        except ImportError:
+            print("httpx is not installed for this Python. Run:  python3 -m pip install httpx python-dotenv")
+            return 1
     stats = run_batch(args.batch, load_prompts([i for i in args.prompts.split(",") if i]), specs,
                       args.samples, args.budget, args.workers, args.temperature, args.sandbox_mode)
     print(json.dumps(stats))
