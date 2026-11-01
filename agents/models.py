@@ -54,12 +54,12 @@ Gate-stage routing decision — the Day 5/7 story:
     same 13 source runs. Result:
 
         variant            score    latency    cost
-        haiku-weighted     0.903    7353 ms    $0.00428
-        haiku-verdict      0.915    1881 ms    $0.00189
+        haiku-weighted     0.903    7353 ms    $0.00535
+        haiku-verdict      0.915    1881 ms    $0.00236
         sonnet-verdict     0.949    2491 ms    $0.00657
                                               (1 JSON-format error)
 
-    Haiku-verdict is faster (3.9x), cheaper (44%), and slightly higher-
+    Haiku-verdict is faster (3.9x), cheaper (56%), and slightly higher-
     scoring than haiku-weighted. The Day 5 latency variance has an
     empirical answer: there's no quality benefit from the component
     breakdown that justifies the latency tax. Production default
@@ -69,7 +69,7 @@ Gate-stage routing decision — the Day 5/7 story:
     and used selectively on retry/escalate verdicts where decomposed
     scoring helps debug WHY a low score happened.
 
-    Sonnet-verdict produced the highest scores but at 3.5x cost over
+    Sonnet-verdict produced the highest scores but at 2.8x cost over
     Haiku-verdict, with a JSON-format failure (verdict prose instead of
     structured output) on 1/13 runs. Not safe for production default
     without strict response-format enforcement (tool-use mode).
@@ -93,12 +93,15 @@ ROUTING: dict[str, dict[str, str]] = {
     "documenter":   {"model": HAIKU,  "rationale": "mechanical docstring addition; < $0.01 cost ceiling holds"},
 }
 
-# Public Anthropic list prices, USD per million tokens. Single source of
+# Public Anthropic list prices, USD per million tokens (checked 2026-10-15
+# against platform.claude.com/docs/en/about-claude/pricing; Haiku 4.5 was
+# previously listed here at 0.80/4.00, which understated its cost by 20%).
+# Single source of
 # truth — the dashboard and RouterBench both import this.
 PRICING: dict[str, dict[str, float]] = {
     OPUS:   {"in": 15.00, "out": 75.00},
     SONNET: {"in":  3.00, "out": 15.00},
-    HAIKU:  {"in":  0.80, "out":  4.00},
+    HAIKU:  {"in":  1.00, "out":  5.00},
 }
 
 # Stage name -> role key in ROUTING. The orchestrator's own stage is
