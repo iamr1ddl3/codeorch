@@ -544,7 +544,8 @@ def reparse_batch(batch: str, sandbox_mode: str | None, runs_dir: Path | None = 
     stats = {"reparsed": 0, "recovered": 0}
     for sid, r in last.items():
         if not r.get("raw") or not (r.get("status") == "parse_error"
-                                     or r.get("output_format") in ("unclosed", "fenced")):
+                                     or r.get("output_format") in ("unclosed", "fenced")
+                                     or r.get("build_status") == "sandbox_error"):  # harness failed, not the model
             continue
         raw = Path(r["raw"]) if Path(r["raw"]).is_absolute() else ROOT / r["raw"]
         files, fmt, incomplete = parse_output(raw.read_text(), bool(r.get("truncated")))
@@ -605,6 +606,11 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--reparse", action="store_true",
                     help="re-parse + build saved parse_error outputs with the current parser (no API calls)")
     args = ap.parse_args(argv)
+    if args.sandbox_mode == "docker":
+        from sandbox.runner import docker_available
+        if not docker_available():
+            print("Docker is not running (start Docker Desktop), or use --sandbox-mode local.")
+            return 1
     if args.reparse:
         print(json.dumps(reparse_batch(args.batch, args.sandbox_mode)))
         return 0

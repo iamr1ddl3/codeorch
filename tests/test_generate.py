@@ -261,3 +261,24 @@ def test_load_env_without_dotenv(tmp_path, monkeypatch):
     assert os.environ["GLM_API_KEY"] == "abc123" and os.environ["OTHER"] == "x"
     assert os.environ["KEEP_ME"] == "original"  # never overrides existing env
     monkeypatch.delenv("OTHER", raising=False)
+
+
+def test_reparse_rebuilds_sandbox_errors(tmp_path, monkeypatch):
+    raw = tmp_path / "raw.txt"
+    raw.write_text(GOOD)
+    b = tmp_path / "b"
+    b.mkdir()
+    (b / "results.jsonl").write_text(json.dumps({
+        "sample_id": "P0__fake__s0", "status": "ok", "build_status": "sandbox_error", "passed": False,
+        "raw": str(raw), "truncated": False, "cost_usd": 0.02}) + "\n")
+    stats = g.reparse_batch("b", "local", runs_dir=tmp_path)
+    last = json.loads((b / "results.jsonl").read_text().splitlines()[-1])
+    assert stats["recovered"] == 1 and last["passed"] is True and last["build_status"] == "passed"
+
+
+def test_docker_mode_refuses_to_start_without_docker(monkeypatch, capsys):
+    import sandbox.runner as sr
+    monkeypatch.setattr(sr, "docker_available", lambda: False)
+    monkeypatch.setenv("GLM_API_KEY", "x")
+    assert g.main(["--batch", "zz", "--models", "glm_flash", "--sandbox-mode", "docker"]) == 1
+    assert "Docker is not running" in capsys.readouterr().out
