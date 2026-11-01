@@ -227,3 +227,18 @@ def test_quota_exhaustion_aborts_the_batch(tmp_path):
         raise RuntimeError('HTTP 429: {"error": {"message": "You exceeded your current quota, please check your plan"}}')
     stats = g.run_batch("b", PROMPTS, [SPEC], 1, 1000, 1, 1.0, "local", call=quota, runs_dir=tmp_path)
     assert stats["aborted"] and "quota" in stats["aborted"]
+
+
+def test_glm_models_enabled_by_glm_key(monkeypatch):
+    for k in ("ANTHROPIC_API_KEY", "GEMINI_API_KEY", "DEEPSEEK_API_KEY"):
+        monkeypatch.delenv(k, raising=False)
+    monkeypatch.setenv("GLM_API_KEY", "x")
+    specs = g.model_specs()
+    assert set(specs) == {"glm_flash", "glm"}
+    assert specs["glm_flash"].model_id == "glm-5.3-flash" and specs["glm_flash"].provider == "glm"
+    assert g.PROVIDERS["glm"] is g.PROVIDERS["deepseek"]
+    assert "coding" not in g.OPENAI_COMPAT["glm"][0]  # pay-as-you-go endpoint, not the Coding Plan
+
+
+def test_zai_insufficient_balance_is_fatal():
+    assert g._FATAL_RE.search('HTTP 429: {"error":{"code":"1113","message":"Insufficient balance or no resource package"}}')
