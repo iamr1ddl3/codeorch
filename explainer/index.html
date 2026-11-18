@@ -1,0 +1,591 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>How One Spec Becomes Working Code · CodeOrch Explained</title>
+<style>
+  /* JetBrains Mono, self-hosted (SIL OFL 1.1, see fonts/OFL.txt) */
+  @font-face { font-family: "JetBrains Mono"; font-weight: 400; font-display: swap; src: url(fonts/jetbrains-mono-400.woff2) format("woff2"); }
+  @font-face { font-family: "JetBrains Mono"; font-weight: 500; font-display: swap; src: url(fonts/jetbrains-mono-500.woff2) format("woff2"); }
+  @font-face { font-family: "JetBrains Mono"; font-weight: 700; font-display: swap; src: url(fonts/jetbrains-mono-700.woff2) format("woff2"); }
+  @font-face { font-family: "JetBrains Mono"; font-weight: 800; font-display: swap; src: url(fonts/jetbrains-mono-800.woff2) format("woff2"); }
+  :root {
+    --paper: #f4ebe0; --sheet: #f9f2e8; --card: #f8f0e6; --chip: #fbf7f1;
+    --line: #ddd3c5; --line-soft: #e6ddd0; --line-strong: #c6bbac;
+    --ink: #1d1b18; --ink-2: #34302b; --muted: #6f6961; --muted-2: #8b847a;
+    --green: #cfe3b2; --green-2: #b2d491; --violet: #e7ddf5; --violet-line: #d5c8e2;
+    --orange: #fcdcbd; --pink: #f8d5cf; --blue: #d6e5f6; --yellow: #fde3a7; --mint: #dcefd2;
+    --rust: #d0683a; --violet-ink: #5a43a6;
+    --pop: 1.5px 2.5px 0 var(--ink);
+    --card-shadow: inset 0 1px 0 #ffffffa6, 0 1px 0 #503c230f, 0 10px 22px -16px #503c2359;
+    --font: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font: 13px/1.6 var(--font); }
+  button { font: inherit; color: inherit; }
+
+  header { display: flex; align-items: center; gap: 10px; padding: 10px 18px; border-bottom: 1px solid var(--line); }
+  .logo { display: flex; align-items: center; gap: 8px; font-weight: 800; font-size: 15px; }
+  .logo svg { width: 26px; height: 26px; }
+  .logo em { font-style: normal; background: linear-gradient(transparent 55%, var(--green-2) 55%); padding: 0 2px; }
+  .hdr-r { margin-left: auto; color: var(--muted); font-size: 11.5px; }
+
+  .wrap { display: grid; grid-template-columns: minmax(0, 1fr) 330px; gap: 14px; padding: 14px 18px; max-width: 1360px; margin: 0 auto; }
+  @media (max-width: 1000px) { .wrap { grid-template-columns: 1fr; } }
+
+  .sheet { background: var(--sheet); border: 1px solid var(--line); border-radius: 14px; padding: 18px 18px 14px;
+           box-shadow: inset 0 1px 0 #fffc, 0 1px 0 #503c230d, 0 18px 40px -30px #503c2373; }
+  .crumb { color: var(--muted); font-size: 12px; }
+  .titlebar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 4px 0 2px; }
+  h1 { margin: 0; font-size: 30px; font-weight: 800; letter-spacing: -.5px; margin-right: auto; }
+  .lede { color: var(--muted); margin: 0 0 12px; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; font-weight: 500; padding: 2px 10px;
+          border: 1.3px solid var(--ink); border-radius: 99px; box-shadow: var(--pop); background: var(--chip); }
+  .chip.y { background: var(--yellow); } .chip.g { background: var(--green); } .chip.v { background: var(--violet); }
+
+  .stage { position: relative; border: 1px solid var(--line); border-radius: 12px; background: #f7efe4; overflow: hidden; }
+  .metrics { display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 10px 0; }
+  .metric { background: var(--chip); border: 1px solid var(--line-strong); border-radius: 8px; padding: 4px 9px; width: 104px; }
+  .metric small { display: block; font-size: 9.5px; letter-spacing: .06em; color: var(--muted); text-transform: uppercase; }
+  .metric b { font-size: 14px; font-weight: 700; transition: color .3s; }
+  .metric.hot { border-color: var(--rust); background: #fbebe7; }
+  .metric.hot b { color: var(--rust); }
+  #scene { display: block; width: 100%; height: auto; margin-bottom: 26px; }
+  .legend { position: absolute; left: 12px; bottom: 10px; display: flex; gap: 14px; flex-wrap: wrap; font-size: 11px; color: var(--muted); }
+  .legend i { display: inline-block; width: 9px; height: 9px; border-radius: 50%; border: 1.2px solid var(--ink); margin-right: 5px; vertical-align: -1px; }
+
+  /* scene pieces */
+  .grid line { stroke: #e3d9cb; stroke-width: .7; }
+  .node { transition: opacity .35s, transform .35s; }
+  .node.dim { opacity: .4; }
+  .node.on { transform: translateY(-6px); }
+  .node.warn .top { fill: var(--orange); }
+  .node.fail .top { fill: var(--pink); }
+  .box polygon { stroke: var(--ink); stroke-width: 1.3; stroke-linejoin: round; }
+  .lbl { font-family: var(--font); text-anchor: middle; fill: var(--ink); pointer-events: none; }
+  .lbl.n { font-size: 11px; font-weight: 800; }
+  .lbl.s { font-size: 9px; fill: var(--ink-2); }
+  .edge { fill: none; stroke: var(--line-strong); stroke-width: 1.6; marker-end: url(#m-off); transition: stroke .3s; }
+  .edge.on { stroke: var(--ink); stroke-width: 1.8; stroke-dasharray: 6 5; animation: flow .7s linear infinite; marker-end: url(#m-ink); }
+  .edge.retry.on { stroke: var(--rust); marker-end: url(#m-rust); }
+  .write { fill: none; stroke: var(--line-strong); stroke-width: 1.2; stroke-dasharray: 2 4; }
+  .write.on { stroke: var(--violet-ink); stroke-width: 1.7; stroke-dasharray: 5 4; animation: flow .7s linear infinite; marker-end: url(#m-vio); }
+  .write.fail { stroke: #c0392b; marker-end: url(#m-red); }
+  @keyframes flow { to { stroke-dashoffset: -11; } }
+  .pill rect.bg { stroke: var(--ink); stroke-width: 1.3; }
+  .pill rect.sh { fill: var(--ink); }
+  .pill text { font-family: var(--font); font-size: 10px; font-weight: 500; fill: var(--ink); }
+  .pill { animation: rise .35s ease-out; }
+  @keyframes rise { from { opacity: 0; transform: translateY(4px); } }
+  .tile { animation: drop .45s ease-out; }
+  @keyframes drop { from { opacity: 0; transform: translateY(-14px); } }
+  @media (prefers-reduced-motion: reduce) { .edge.on, .write.on, .pill, .tile { animation: none; } .node.on { transform: none; } }
+
+  /* store table */
+  .rows { margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: 8px 12px; overflow-x: auto; }
+  .rows .hd { color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+  .rows .tw { height: 150px; overflow-y: auto; }
+  .rows thead th { position: sticky; top: 0; background: var(--card); }
+  table { width: 100%; border-collapse: collapse; font-size: 11.5px; }
+  th, td { text-align: left; padding: 3px 8px; border-bottom: 1px dashed var(--line); white-space: nowrap; }
+  th { color: var(--muted-2); font-weight: 500; }
+  tr.new td { animation: flash 1.4s ease-out; }
+  @keyframes flash { from { background: var(--violet); } to { background: transparent; } }
+  .ok { color: #2a7a3d; } .bad { color: #c0392b; } .amb { color: #a5650c; }
+
+  /* lesson stepper */
+  .lesson { margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--card); padding: 10px 14px 8px; }
+  .lesson .hd { display: flex; justify-content: space-between; font-size: 11px; }
+  .lesson .hd b { font-weight: 700; letter-spacing: .04em; }
+  .lesson .hd span { color: var(--muted); }
+  .steps { display: grid; grid-template-columns: repeat(10, 1fr); margin-top: 8px; position: relative; }
+  .steps::before { content: ""; position: absolute; top: 12px; left: 5%; right: 5%; height: 1.5px; background: var(--line-strong); }
+  .steps .prog { position: absolute; top: 12px; left: 5%; height: 2px; background: var(--ink); transition: width .35s; }
+  .st { display: flex; flex-direction: column; align-items: center; gap: 4px; background: none; border: 0; cursor: pointer; padding: 0; position: relative; }
+  .st i { font-style: normal; width: 24px; height: 24px; border-radius: 50%; display: grid; place-items: center; font-size: 11px;
+          background: var(--chip); border: 1.3px solid var(--line-strong); color: var(--muted); transition: all .25s; }
+  .st span { font-size: 10.5px; color: var(--muted); text-align: center; line-height: 1.25; }
+  .st.seen i { border-color: var(--ink); color: var(--ink); }
+  .st.seen span { color: var(--ink-2); }
+  .st.on i { background: var(--green); border: 2px solid var(--ink); color: var(--ink); font-weight: 700; box-shadow: 0 0 0 3px #b2d49166; }
+  .st.on span { color: var(--ink); font-weight: 700; }
+
+  /* side panel */
+  aside { display: flex; flex-direction: column; gap: 14px; }
+  .card { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 16px; box-shadow: var(--card-shadow); }
+  .panel { display: flex; flex-direction: column; height: 680px; }
+  .pbody { flex: 1; min-height: 0; overflow-y: auto; margin-right: -8px; padding-right: 8px; }
+  .pbody::-webkit-scrollbar { width: 6px; } .pbody::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: 3px; }
+  .phead { display: flex; justify-content: space-between; align-items: center; font-size: 11px; font-weight: 700; letter-spacing: .06em; }
+  .tag { font-size: 9.5px; font-weight: 700; letter-spacing: .08em; padding: 2px 9px; border-radius: 99px; border: 1.2px solid; }
+  .tag.problem { background: var(--pink); color: #8f2a22; border-color: #d9577a; }
+  .tag.idea { background: var(--violet); color: var(--violet-ink); border-color: #7c63d0; }
+  .tag.fix { background: var(--green); color: #24521c; border-color: #3f8f4e; }
+  .tag.case { background: var(--orange); color: #6d4a0c; border-color: #e8834d; }
+  .tag.start { background: var(--blue); color: #1f63a0; border-color: #2f86ce; }
+  .panel h2 { font-size: 19px; font-weight: 800; margin: 10px 0 8px; line-height: 1.3; }
+  .panel p { margin: 0 0 10px; color: var(--ink-2); }
+  .panel code { background: #efe5d8; border: 1px solid var(--line); border-radius: 5px; padding: 0 5px; font-size: 12px; }
+  .key { display: flex; gap: 10px; background: var(--violet); border: 1px solid var(--violet-line); border-radius: 8px; padding: 10px 12px; margin: 6px 0 12px; }
+  .key .ic { flex: none; width: 24px; height: 24px; border: 1.2px solid var(--ink); border-radius: 6px; background: var(--chip); display: grid; place-items: center; font-size: 12px; }
+  .key b { display: block; font-size: 9.5px; letter-spacing: .08em; color: var(--muted); font-weight: 700; }
+  .changed { font-size: 10px; font-weight: 700; letter-spacing: .06em; color: var(--muted); margin: 4px 0 4px; }
+  .mini { width: 100%; font-size: 12px; }
+  .mini td { white-space: normal; padding: 3px 4px; border-bottom: 1px dashed var(--line); }
+  .panel ul { padding-left: 16px; margin: 0 0 10px; color: var(--ink-2); }
+  .nav { margin-top: auto; display: flex; gap: 8px; padding-top: 12px; }
+  .nav button { border-radius: 9px; padding: 8px 12px; cursor: pointer; border: 1.3px solid var(--line-strong); background: #faf5eeb3; }
+  .nav button:disabled { opacity: .45; cursor: default; }
+  .nav .next { flex: 1; display: flex; justify-content: space-between; background: var(--green); border-color: var(--ink); box-shadow: var(--pop); font-weight: 700; }
+  .nav .next:active { transform: translate(1px, 2px); box-shadow: none; }
+  .keys { font-size: 10.5px; color: var(--muted-2); margin-top: 8px; }
+  .keys kbd { border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; font: inherit; background: var(--chip); }
+  .learn h3 { margin: 0 0 8px; font-size: 11px; letter-spacing: .06em; }
+  .learn label { display: flex; gap: 8px; align-items: flex-start; color: var(--ink-2); margin: 5px 0; font-size: 12px; }
+  .learn input { margin: 2px 0 0; accent-color: #3f8f4e; pointer-events: none; }
+</style>
+</head>
+<body>
+<header>
+  <div class="logo">
+    <svg viewBox="0 0 26 26" aria-hidden="true"><g stroke="#1d1b18" stroke-width="1.3" stroke-linejoin="round">
+      <path d="M13 3 21 7.5 13 12 5 7.5Z" fill="#e7ddf5"/><path d="M5 7.5V11L13 15.5V12Z" fill="#cdbfe6"/><path d="M21 7.5V11L13 15.5V12Z" fill="#bba9df"/>
+      <path d="M13 12.5 21 17 13 21.5 5 17Z" fill="#cfe3b2"/><path d="M5 17V19.5L13 24V21.5Z" fill="#b2d491"/><path d="M21 17V19.5L13 24V21.5Z" fill="#9cc47a"/></g></svg>
+    CodeOrch <em>Explained</em>
+  </div>
+  <div class="hdr-r">multi-agent code generation, step by step</div>
+</header>
+
+<div class="wrap">
+  <main class="sheet">
+    <div class="crumb">01. The pipeline&nbsp; / &nbsp;Lesson 1 of 3</div>
+    <div class="titlebar">
+      <h1>How One Spec Becomes Code</h1>
+      <span class="chip y">◷ 8 min</span><span class="chip g">▮ Beginner</span><span class="chip v">☰ 10 steps</span>
+    </div>
+    <p class="lede">Follow one request through seven agents, and watch where each one leaves its work.</p>
+
+    <div class="stage">
+      <div class="metrics">
+        <div class="metric" id="mm-t"><small>◷ Elapsed ≈</small><b>—</b></div>
+        <div class="metric" id="mm-c"><small>⚡ Model calls</small><b>—</b></div>
+        <div class="metric" id="mm-r"><small>▤ Store rows</small><b>—</b></div>
+        <div class="metric" id="mm-g"><small>✓ Gate score</small><b>—</b></div>
+        <div class="metric" id="mm-x"><small>↻ Retries</small><b>—</b></div>
+      </div>
+      <svg id="scene" role="img" aria-label="Isometric diagram of the CodeOrch pipeline"></svg>
+      <div class="legend">
+        <span><i style="background:var(--violet)"></i>Opus</span>
+        <span><i style="background:var(--blue)"></i>Sonnet</span>
+        <span><i style="background:var(--yellow)"></i>Haiku</span>
+        <span><i style="background:var(--ink)"></i>hand-off</span>
+        <span><i style="background:var(--violet-ink)"></i>write to store</span>
+        <span><i style="background:var(--rust)"></i>retry</span>
+      </div>
+    </div>
+
+    <div class="rows">
+      <div class="hd">SELECT stage, agent_name, status, score FROM agent_context WHERE run_id = '3f2a…';</div>
+      <div class="tw" id="tw"><table><thead><tr><th>stage</th><th>agent_name</th><th>status</th><th>score</th></tr></thead><tbody id="rows"></tbody></table></div>
+    </div>
+
+    <div class="lesson">
+      <div class="hd"><b>IN THIS LESSON</b><span id="stepof"></span></div>
+      <div class="steps" id="steps"><div class="prog" id="prog"></div></div>
+    </div>
+  </main>
+
+  <aside>
+    <div class="card panel">
+      <div class="phead"><span id="kicker"></span><span class="tag" id="tag"></span></div>
+      <div class="pbody" id="pbody">
+      <h2 id="title"></h2>
+
+      <!-- One block per step; JS shows the current one. -->
+      <div class="sb">
+        <p>Someone sends a spec to the API:</p>
+        <p><code>Write a Python function clamp(x, low, high). Include 2 pytest tests.</code></p>
+        <p>The <b>Orchestrator</b> gives the request a <code>run_id</code>. From here on, every agent's output is stored under that id.</p>
+        <div class="key"><div class="ic">✦</div><div><b>KEY IDEA</b>The Orchestrator doesn't write any code itself. It decides which agent runs next, and what to do when something goes wrong.</div></div>
+      </div>
+      <div class="sb">
+        <p>Sonnet turns the sentence into a structured plan: the function signature, the edge cases (what if <code>low &gt; high</code>?), and the two tests to write.</p>
+        <p>The plan is not passed to the next agent in memory. It's <b>written to the context store</b> as a row in Postgres.</p>
+        <div class="key"><div class="ic">✦</div><div><b>KEY IDEA</b>Agents keep no state of their own. Each one reads its inputs from the store and writes its output back. If the process dies, the work done so far is still in the database.</div></div>
+      </div>
+      <div class="sb">
+        <p>Both agents start from the <b>plan</b> and run in parallel with <code>asyncio.gather</code>.</p>
+        <p>The Tester writes tests from the plan without seeing the Coder's code. If it wrote tests by reading the code, the tests would pass even when the code was wrong.</p>
+        <div class="key"><div class="ic">✦</div><div><b>KEY IDEA</b>The tests act as an independent check: two agents with different jobs, working from the same spec.</div></div>
+      </div>
+      <div class="sb">
+        <p>About 7 seconds later, the code and the tests each become a row. The store now has the plan, the code and the tests, which is everything the next stage needs.</p>
+        <p>The dashboard counts a run with any of these rows missing as <b>context loss</b>, one of its 8 SLIs (target &lt; 2%).</p>
+        <div class="changed">WHAT CHANGED</div>
+        <table class="mini"><tr><td>+</td><td>Rows: <b>code</b>, <b>tests</b></td></tr><tr><td>~</td><td>Elapsed ≈2s → ≈9s (both ran at once)</td></tr></table>
+      </div>
+      <div class="sb">
+        <p>Haiku reads the plan, the code and the tests, then returns a score from 0 to 1 and a list of issues.</p>
+        <table class="mini"><tr><td class="ok">≥ 0.75</td><td>pass → Reviewer</td></tr><tr><td class="amb">0.50–0.74</td><td>retry → Coder, with the issues</td></tr><tr><td class="bad">&lt; 0.50</td><td>escalate → Orchestrator</td></tr></table>
+        <p style="margin-top:10px">This run scores <b>0.68</b>, so it's a retry. The gate's issue: <i>"no handling when low &gt; high"</i>.</p>
+        <div class="key"><div class="ic">✦</div><div><b>KEY IDEA</b>The model can contradict itself (score 0.92, verdict "retry"). The code ignores the model's verdict and routes on the score alone, so routing stays predictable.</div></div>
+      </div>
+      <div class="sb">
+        <p>Only the <b>Coder</b> runs again. It gets its best attempt so far plus the gate's issues. The Tester's tests are reused because the plan hasn't changed.</p>
+        <p>The new attempt scores <b>0.88</b>, which is a pass.</p>
+        <div class="key"><div class="ic">✦</div><div><b>KEY IDEA</b>The loop stops early if a retry doesn't improve the score, and it always keeps the best-scoring attempt. Two retries is the hard limit.</div></div>
+        <div class="changed">WHAT CHANGED</div>
+        <table class="mini"><tr><td>+</td><td>Coder re-run with gate issues</td></tr><tr><td>~</td><td>Gate score 0.68 → 0.88</td></tr><tr><td>~</td><td>Elapsed ≈11s → ≈20s</td></tr></table>
+      </div>
+      <div class="sb">
+        <p><b>Reviewer</b> (Sonnet) makes a final check and approves the code. <b>Documenter</b> (Haiku) adds docstrings. The Orchestrator writes a one-line summary and returns the result.</p>
+        <p>Neither stage can block delivery. If the reviewer fails, the code goes through marked <code>approved=false</code>. If the documenter fails, you get the code without the added docs.</p>
+        <div class="key"><div class="ic">✦</div><div><b>KEY IDEA</b>You always get something back: documented code, reviewed code, or the raw code files, in that order of preference.</div></div>
+      </div>
+      <div class="sb">
+        <p>Same run, but this time the Coder times out.</p>
+        <p>Because of <code>return_exceptions=True</code>, the Tester <b>keeps going</b> and saves its tests. The Coder writes a row with <code>status='failure'</code> and the error. The Orchestrator records its own failure and stops the run.</p>
+        <div class="key"><div class="ic">✦</div><div><b>KEY IDEA</b>One agent failing doesn't take the others down, and every partial result is a row you can look up. Debugging after the fact is a <code>SELECT</code>, not hours of reading logs.</div></div>
+      </div>
+      <div class="sb">
+        <table class="mini">
+          <tr><td>Orchestrator</td><td>Opus</td><td>run-wide decisions</td></tr>
+          <tr><td>Planner</td><td>Sonnet</td><td>Haiku makes plans that are too shallow</td></tr>
+          <tr><td>Coder / Tester</td><td>Sonnet</td><td>code and test quality matter most</td></tr>
+          <tr><td>Gate</td><td>Haiku</td><td>measured, see below</td></tr>
+          <tr><td>Reviewer</td><td>Sonnet</td><td>needs judgment across the whole result</td></tr>
+          <tr><td>Documenter</td><td>Haiku</td><td>adding docstrings is routine work</td></tr>
+        </table>
+        <p style="margin-top:10px">The gate's model was picked by test, not by guess. RouterBench replayed 13 runs through three gate variants. Haiku returning only a verdict was <b>3.9× faster and 56% cheaper</b> than the original weighted-rubric gate, with no loss in score.</p>
+      </div>
+      <div class="sb">
+        <p>One spec, seven agents, one store:</p>
+        <ul>
+          <li>Agents keep no state and share work only through the store.</li>
+          <li>Tests are written from the plan, so they check the code independently.</li>
+          <li>A cheap model grades the work; the score decides pass, retry or escalate.</li>
+          <li>Retries re-run only the Coder, keep the best attempt, and stop when the score stops improving.</li>
+          <li>Crashes leave rows behind, not gaps.</li>
+        </ul>
+        <div class="key"><div class="ic">→</div><div><b>NEXT LESSON</b>How do you know it works? The 8 SLIs on the dashboard, and the codegen benchmark.</div></div>
+      </div>
+      </div>
+
+      <div class="nav">
+        <button id="back">← Back</button>
+        <button id="next" class="next"><span id="nextlbl"></span><span>→</span></button>
+      </div>
+      <div class="keys"><kbd>←</kbd> <kbd>→</kbd> step</div>
+    </div>
+
+    <div class="card learn">
+      <h3>YOU'LL LEARN</h3>
+      <div id="learn">
+        <label data-at="2"><input type="checkbox" tabindex="-1">Why agents never hand work to each other directly</label>
+        <label data-at="3"><input type="checkbox" tabindex="-1">Why the Tester never sees the Coder's code</label>
+        <label data-at="5"><input type="checkbox" tabindex="-1">How a cheap model decides pass, retry or escalate</label>
+        <label data-at="6"><input type="checkbox" tabindex="-1">How the pipeline fixes its own mistakes</label>
+        <label data-at="8"><input type="checkbox" tabindex="-1">What happens when an agent crashes</label>
+        <label data-at="9"><input type="checkbox" tabindex="-1">Why each stage uses the model it does</label>
+      </div>
+    </div>
+  </aside>
+</div>
+
+<script>
+/* ---------- isometric scene ---------- */
+const NS = "http://www.w3.org/2000/svg";
+const S = 26, C = Math.cos(Math.PI / 6), H = 1.45, NH = 0.6, HR = 1.62;   // unit px, footprint half-size for edge trims, node height, hex radius
+const svg = document.getElementById("scene");
+const bounds = { x0: 1e9, y0: 1e9, x1: -1e9, y1: -1e9 };
+function P(x, y, z = 0, track = true) {
+  const p = [(x - y) * C * S, (x + y) * 0.5 * S - z * S];
+  if (track) { bounds.x0 = Math.min(bounds.x0, p[0]); bounds.x1 = Math.max(bounds.x1, p[0]); bounds.y0 = Math.min(bounds.y0, p[1]); bounds.y1 = Math.max(bounds.y1, p[1]); }
+  return p;
+}
+function E(tag, attrs, parent) {
+  const e = document.createElementNS(NS, tag);
+  for (const k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.append(e);
+  return e;
+}
+const pts = a => a.map(p => p.map(n => n.toFixed(1)).join(",")).join(" ");
+function shade(hex, f) {
+  const n = parseInt(hex.slice(1), 16);
+  return "#" + [16, 8, 0].map(s => Math.round(((n >> s) & 255) * f).toString(16).padStart(2, "0")).join("");
+}
+function box(parent, x, y, w, d, h, col) {
+  const g = E("g", { class: "box" }, parent);
+  E("polygon", { points: pts([P(x, y + d + .15, 0), P(x + w + .15, y + d + .15, 0), P(x + w + .15, y + .15, 0)]), fill: "#503c2322", stroke: "none" }, g);
+  E("polygon", { points: pts([P(x, y + d, 0), P(x + w, y + d, 0), P(x + w, y + d, h), P(x, y + d, h)]), fill: shade(col, .9) }, g);
+  E("polygon", { points: pts([P(x + w, y, 0), P(x + w, y + d, 0), P(x + w, y + d, h), P(x + w, y, h)]), fill: shade(col, .8) }, g);
+  E("polygon", { class: "top", points: pts([P(x, y, h), P(x + w, y, h), P(x + w, y + d, h), P(x, y + d, h)]), fill: col }, g);
+  return g;
+}
+function text(parent, [x, y], str, cls) { const t = E("text", { x, y, class: "lbl " + cls }, parent); t.textContent = str; return t; }
+function pill(parent, [x, y], str, kind = "") {
+  const w = str.length * 6.2 + 18, g = E("g", { class: "pill" }, parent);
+  const fill = { warn: "#fbe5bd", fail: "#f8d5cf", ok: "#dcefd2", vio: "#ebe3f1" }[kind] || "#fbf7f1";
+  E("rect", { class: "sh", x: x - w / 2 + 1.5, y: y - 10 + 2.5, width: w, height: 20, rx: 10 }, g);
+  E("rect", { class: "bg", x: x - w / 2, y: y - 10, width: w, height: 20, rx: 10, fill }, g);
+  const t = E("text", { x, y: y + 3.5, "text-anchor": "middle" }, g); t.textContent = str;
+  return g;
+}
+
+const COL = { opus: "#e7ddf5", sonnet: "#d6e5f6", haiku: "#fde3a7", cream: "#f3eadd", green: "#cfe3b2", store: "#dcefd2" };
+const NODES = {
+  spec:   { x: 0,    y: 0,    name: "Spec",         sub: "/generate", col: COL.cream },
+  orch:   { x: 4.6,  y: 0,    name: "Orchestrator", sub: "Opus",           col: COL.opus },
+  plan:   { x: 9.2,  y: 0,    name: "Planner",      sub: "Sonnet",         col: COL.sonnet },
+  coder:  { x: 13,   y: -2.6, name: "Coder",        sub: "Sonnet",         col: COL.sonnet },
+  tester: { x: 15.4, y: 2.6,  name: "Tester",       sub: "Sonnet",         col: COL.sonnet },
+  gate:   { x: 19.4, y: 0,    name: "Quality gate", sub: "Haiku",          col: COL.haiku },
+  review: { x: 19.4, y: 11,    name: "Reviewer",     sub: "Sonnet",         col: COL.sonnet },
+  doc:    { x: 14.4, y: 11,    name: "Documenter",   sub: "Haiku",          col: COL.haiku },
+  out:    { x: 9.4,  y: 11,    name: "Output",       sub: "code + docs",    col: COL.green },
+};
+const STORE = { x: 1.5, y: 5.6, w: 16, d: 2, h: 0.38 };
+
+// trimmed floor line between two grid points; extra trim when a line passes behind a block (its top face hides the floor there)
+function seg(a, b, trimA, trimB) {
+  const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy), ux = dx / L, uy = dy / L, m = Math.max(Math.abs(ux), Math.abs(uy));
+  const dom = Math.abs(ux) >= Math.abs(uy) ? ux : uy;
+  const ta = trimA ? (H + .2 + (dom < 0 ? NH + .2 : 0)) / m : 0;
+  const tb = trimB ? (H + .25 + (dom > 0 ? NH + .25 : 0)) / m : 0;
+  return [[a[0] + ux * ta, a[1] + uy * ta], [b[0] - ux * tb, b[1] - uy * tb]];
+}
+const at = k => [NODES[k].x, NODES[k].y];
+function offset([a, b], o) { const dx = b[0] - a[0], dy = b[1] - a[1], L = Math.hypot(dx, dy); return [a, b].map(p => [p[0] - dy / L * o, p[1] + dx / L * o]); }
+
+// defs: arrow markers
+const defs = E("defs", {}, svg);
+for (const [id, c] of [["off", "#c6bbac"], ["ink", "#1d1b18"], ["rust", "#d0683a"], ["vio", "#5a43a6"], ["red", "#c0392b"]]) {
+  const m = E("marker", { id: "m-" + id, viewBox: "0 0 10 10", refX: 8, refY: 5, markerWidth: 6, markerHeight: 6, orient: "auto" }, defs);
+  E("path", { d: "M0,1 L9,5 L0,9z", fill: c }, m);
+}
+
+// floor grid (not tracked for bounds)
+const grid = E("g", { class: "grid" }, svg);
+for (let i = -8; i <= 26; i++) {
+  E("line", { x1: P(i, -9, 0, false)[0], y1: P(i, -9, 0, false)[1], x2: P(i, 16, 0, false)[0], y2: P(i, 16, 0, false)[1] }, grid);
+  E("line", { x1: P(-8, i - 6, 0, false)[0], y1: P(-8, i - 6, 0, false)[1], x2: P(26, i - 6, 0, false)[0], y2: P(26, i - 6, 0, false)[1] }, grid);
+}
+
+// floor-level lines (drawn before blocks so blocks sit on top of them)
+const floor = E("g", {}, svg);
+const line = (id, cls, [a, b]) => E("line", { id, class: cls, x1: P(...a)[0], y1: P(...a)[1], x2: P(...b)[0], y2: P(...b)[1] }, floor);
+const EDGES = [["e-spec", "spec", "orch"], ["e-orch", "orch", "plan"], ["e-pc", "plan", "coder"], ["e-pt", "plan", "tester"],
+               ["e-tg", "tester", "gate"], ["e-gr", "gate", "review"], ["e-rd", "review", "doc"], ["e-do", "doc", "out"]];
+for (const [id, a, b] of EDGES) line(id, "edge", seg(at(a), at(b), true, true));
+line("e-cg", "edge", offset(seg(at("coder"), at("gate"), true, true), .35));
+line("e-retry", "edge retry", offset(seg(at("gate"), at("coder"), true, true), .35));
+const back = STORE.y, front = STORE.y + STORE.d;
+const WRITES = { orch: [4.6, back], plan: [9.2, back], coder: [13, back], tester: [15.4, back], gate: [17.3, back + .3], review: [17.3, front - .3], doc: [14.4, front] };
+for (const k in WRITES) line("w-" + k, "write", seg(at(k), WRITES[k], true, false));
+
+// blocks, back to front
+const blocks = E("g", {}, svg), nodeEls = {};
+// hexagonal prism: visible side faces shaded by which way they face, then the top
+function hex(parent, cx, cy, r, h, col) {
+  const g = E("g", { class: "box" }, parent);
+  const v = [...Array(6)].map((_, i) => [cx + r * Math.cos(Math.PI / 3 * i), cy + r * Math.sin(Math.PI / 3 * i)]);
+  E("polygon", { points: pts(v.map(([x, y]) => P(x + .18, y + .18, 0))), fill: "#503c2322", stroke: "none" }, g);
+  v.forEach((a, i) => {
+    const b = v[(i + 1) % 6], n = Math.PI / 3 * i + Math.PI / 6;
+    if (Math.cos(n) + Math.sin(n) <= 0.01) return;   // faces away from the camera
+    E("polygon", { points: pts([P(...a, 0), P(...b, 0), P(...b, h), P(...a, h)]), fill: shade(col, .84 + .07 * (Math.sin(n) - Math.cos(n))) }, g);
+  });
+  E("polygon", { class: "top", points: pts(v.map(([x, y]) => P(x, y, h))), fill: col }, g);
+}
+// 16x16 line icons, drawn screen-aligned on the top face
+const ICONS = {
+  orch:   ["M-6 4L0-4L6 4", [[-6, 4], [0, -4], [6, 4]]],
+  plan:   ["M-2-5H7M-2 0H7M-2 5H7", [[-6, -5], [-6, 0], [-6, 5]]],
+  coder:  ["M-3-5L-8 0L-3 5M3-5L8 0L3 5M1-7L-1 7"],
+  tester: ["M-3-7H3M-2-7V-2L-7 6H7L2-2V-7M-4 2H4"],
+  gate:   ["M0-7L7-4V1C7 5 0 8 0 8C0 8-7 5-7 1V-4ZM-3 0L-1 3L4-3"],
+  review: ["M-8 0C-4-6 4-6 8 0C4 6-4 6-8 0Z", [[0, 0]]],
+  doc:    ["M-5-7H3L6-4V7H-5ZM-2-2H3M-2 1H3M-2 4H1"],
+  out:    ["M-7-3L0-7L7-3V4L0 8L-7 4ZM-7-3L0 1L7-3M0 1V8"],
+};
+function icon(parent, k, [x, y]) {
+  const g = E("g", { transform: `translate(${x.toFixed(1)} ${y.toFixed(1)})` }, parent);
+  E("circle", { r: 11, fill: "#fbf7f1", stroke: "#1d1b18", "stroke-width": 1.2 }, g);
+  const [d, dots = []] = ICONS[k], s = E("g", { transform: "scale(.72)", fill: "none", stroke: "#1d1b18", "stroke-width": 1.7, "stroke-linecap": "round", "stroke-linejoin": "round" }, g);
+  E("path", { d }, s);
+  for (const [cx, cy] of dots) E("circle", { cx, cy, r: 2, fill: "#fbf7f1" }, s);
+}
+// the spec arrives from a laptop: base slab + upright screen with a few lines of "code"
+function laptop(g, cx, cy) {
+  box(g, cx - 1.05, cy - 1.45, 2.1, 2.9, .22, "#f3eadd");
+  const xb = cx - 1.0, ya = cy - 1.3, yb = cy + 1.3;   // screen stands on the back-left edge, facing the viewer
+  E("polygon", { points: pts([P(xb, ya, .22), P(xb, yb, .22), P(xb, yb, 2.05), P(xb, ya, 2.05)]), fill: "#46413b", stroke: "#1d1b18", "stroke-width": 1.3, "stroke-linejoin": "round" }, g);
+  E("polygon", { points: pts([P(xb, ya + .14, .36), P(xb, yb - .14, .36), P(xb, yb - .14, 1.9), P(xb, ya + .14, 1.9)]), fill: "#ebe3f1" }, g);
+  [[.3, 1.4], [.5, 1.0], [.5, 1.6], [.3, .8]].forEach(([dy, len], i) => {
+    const a = P(xb, ya + dy, 1.62 - i * .3), b = P(xb, ya + dy + len, 1.62 - i * .3);
+    E("line", { x1: a[0], y1: a[1], x2: b[0], y2: b[1], stroke: i === 1 ? "#7c63d0" : "#8b847a", "stroke-width": 2.2, "stroke-linecap": "round" }, g);
+  });
+  for (let i = 0; i < 3; i++) {   // keyboard rows
+    const a = P(cx - .6 + i * .3, cy - 1.1, .22), b = P(cx - .6 + i * .3, cy + 1.1, .22);
+    E("line", { x1: a[0], y1: a[1], x2: b[0], y2: b[1], stroke: "#c6bbac", "stroke-width": 2.5, "stroke-dasharray": "4 2" }, g);
+  }
+}
+function drawNode(k) {
+  const n = NODES[k], g = E("g", { class: "node", id: "n-" + k }, blocks);
+  if (k === "spec") {
+    laptop(g, n.x, n.y);
+    pill(g, P(n.x - .3, n.y + 2.6, 0), "you · POST /generate");
+  } else {
+    hex(g, n.x, n.y, HR, NH, n.col);
+    const c = P(n.x, n.y, NH);
+    icon(g, k, [c[0], c[1] - 12]);
+    text(g, [c[0], c[1] + 10], n.name, "n");
+    text(g, [c[0], c[1] + 20], n.sub, "s");
+  }
+  nodeEls[k] = g;
+}
+["spec", "orch", "coder", "plan", "tester", "gate"].forEach(drawNode);
+const storeG = E("g", {}, blocks);
+box(storeG, STORE.x, STORE.y, STORE.w, STORE.d, STORE.h, COL.store);
+const tiles = E("g", {}, storeG);
+["out", "doc", "review"].forEach(drawNode);
+
+// static labels
+const labels = E("g", {}, svg);
+pill(labels, P(7, front + 1.2, 0), "context store · pgvector", "ok");
+const rowPill = E("g", {}, labels);
+const dyn = E("g", {}, svg);   // per-step pills
+
+// fit viewBox to content
+const pad = 30;
+svg.setAttribute("viewBox", `${bounds.x0 - pad} ${bounds.y0 - pad - 40} ${bounds.x1 - bounds.x0 + 2 * pad} ${bounds.y1 - bounds.y0 + 2 * pad + 50}`);
+
+/* ---------- lesson data ---------- */
+// ponytail: timings/scores are an illustrative walk-through (RouterBench-corpus averages, rounded), not a live run.
+const R = (stage, agent, status, score = "—") => ({ stage, agent, status, score });
+const ORCH = s => R("orchestrator", "Orchestrator", s);
+const PLAN = [R("plan", "Planner", "success")];
+const FAN = [...PLAN, R("code", "Coder", "success"), R("tests", "Tester", "success")];
+const GATE1 = [...FAN, R("gate", "QualityGate", "success", "0.68 → retry")];
+const RETRY = [...GATE1, R("code", "Coder", "success"), R("gate", "QualityGate", "success", "0.88 → pass")];
+const DONE = [ORCH("success"), ...RETRY, R("review", "Reviewer", "success"), R("doc", "Documenter", "success")];
+const CRASH = [ORCH("failure"), ...PLAN, R("code", "Coder", "failure"), R("tests", "Tester", "success")];
+const ALL = Object.keys(NODES);
+
+const STEPS = [
+  { nav: "Spec in", tag: ["start", "START"], title: "A one-sentence request arrives",
+    on: ["spec", "orch"], edges: ["e-spec"], rows: [ORCH("running")], m: ["0s", 0, "—", 0],
+    pills: [["spec", "clamp(x, low, high)"], ["orch", "run_id 3f2a…", "vio"]] },
+  { nav: "Plan", tag: ["idea", "CORE IDEA"], title: "The Planner breaks the spec into tasks",
+    on: ["plan"], done: ["spec", "orch"], edges: ["e-orch"], writes: ["w-plan"], rows: [ORCH("running"), ...PLAN], m: ["≈2s", 1, "—", 0],
+    pills: [["plan", "signature · edge cases · 2 tests"]] },
+  { nav: "Fan out", tag: ["idea", "CORE IDEA"], title: "Coder and Tester work at the same time",
+    on: ["coder", "tester"], done: ["spec", "orch", "plan"], edges: ["e-pc", "e-pt"], rows: [ORCH("running"), ...PLAN], m: ["≈2s", 1, "—", 0],
+    pills: [["coder", "reads: plan"], ["tester", "reads: plan, not code", "vio"]] },
+  { nav: "Write back", tag: ["idea", "CORE IDEA"], title: "Both results land in the store",
+    on: ["coder", "tester"], done: ["spec", "orch", "plan"], writes: ["w-coder", "w-tester"], rows: [ORCH("running"), ...FAN], m: ["≈9s", 3, "—", 0],
+    pills: [["coder", "≈7s · saved ✓", "ok"], ["tester", "≈7s · saved ✓", "ok"]] },
+  { nav: "Gate", tag: ["problem", "PROBLEM"], title: "A cheap model grades the work",
+    warn: ["gate"], done: ["spec", "orch", "plan", "coder", "tester"], edges: ["e-cg", "e-tg"], writes: ["w-gate"], rows: [ORCH("running"), ...GATE1], m: ["≈11s", 4, "0.68", 0],
+    pills: [["gate", "0.68 · retry", "warn"]] },
+  { nav: "Retry", tag: ["fix", "FIX"], title: "The pipeline fixes its own mistake",
+    on: ["coder", "gate"], done: ["spec", "orch", "plan", "tester"], edges: ["e-retry", "e-cg"], writes: ["w-coder", "w-gate"], rows: [ORCH("running"), ...RETRY], m: ["≈20s", 6, "0.88", 1],
+    pills: [["coder", "retry 1 · + gate issues", "warn"], ["gate", "0.88 · pass", "ok"], ["tester", "tests reused"]] },
+  { nav: "Finish", tag: ["fix", "FINISH"], title: "Review, document, deliver",
+    on: ["review", "doc", "out"], done: ["spec", "orch", "plan", "coder", "tester", "gate"], edges: ["e-gr", "e-rd", "e-do"], writes: ["w-review", "w-doc", "w-orch"], rows: DONE, m: ["≈32s", 9, "0.88", 1],
+    pills: [["review", "approved ✓", "ok"], ["doc", "+ docstrings"], ["out", "delivered", "ok"]] },
+  { nav: "Crash", tag: ["case", "CASE"], title: "What if an agent crashes?",
+    on: ["tester"], fail: ["coder", "orch"], done: ["spec", "plan"], writes: ["w-tester"], failWrites: ["w-coder", "w-orch"], rows: CRASH, m: ["≈9s", 3, "—", 0],
+    pills: [["coder", "timeout ✕", "fail"], ["tester", "kept going ✓", "ok"], ["orch", "run stopped", "fail"]] },
+  { nav: "Models", tag: ["idea", "WHY"], title: "Why each stage uses the model it does",
+    done: ALL, rows: DONE, m: ["≈32s", 9, "0.88", 1],
+    pills: [["orch", "Opus · decides"], ["plan", "Sonnet · reasons"], ["gate", "Haiku · 3.9× faster", "warn"], ["doc", "Haiku · routine"]] },
+  { nav: "Recap", tag: ["start", "RECAP"], title: "Recap",
+    done: ALL, rows: DONE, m: ["≈32s", 9, "0.88", 1], pills: [["out", "documented code", "ok"]] },
+];
+
+/* ---------- rendering ---------- */
+const $ = id => document.getElementById(id);
+const bodies = document.querySelectorAll(".sb");
+let cur = 0, shown = [], prevM = [];
+
+function el(tag, txt, cls) { const e = document.createElement(tag); e.textContent = txt; if (cls) e.className = cls; return e; }
+const rkey = r => r.stage + r.agent + r.status + r.score;
+
+function renderRows(rows) {
+  const old = shown.map(rkey), tb = $("rows");
+  tb.replaceChildren();
+  rows.forEach((r, i) => {
+    const tr = document.createElement("tr");
+    if (old[i] !== rkey(r)) tr.className = "new";
+    tr.append(el("td", r.stage), el("td", r.agent), el("td", r.status, r.status === "success" ? "ok" : r.status === "failure" ? "bad" : "amb"), el("td", r.score));
+    tb.append(tr);
+  });
+  // a little tile on the store slab per row
+  tiles.replaceChildren();
+  rows.forEach((r, i) => {
+    const g = E("g", old[i] !== rkey(r) ? { class: "tile" } : {}, tiles);
+    box(g, STORE.x + .35 + i * 1.42, STORE.y + .4, 1.1, 1.1, STORE.h + .14, r.status === "success" ? "#b2d491" : r.status === "failure" ? "#f3a99d" : "#fbd38d");
+  });
+  rowPill.replaceChildren();
+  pill(rowPill, P(STORE.x + STORE.w - 1, front + 1.1, 0), `${rows.length} row${rows.length === 1 ? "" : "s"}`);
+  shown = rows;
+}
+
+function go(i) {
+  cur = (i + STEPS.length) % STEPS.length;
+  const s = STEPS[cur], has = (k, v) => !!s[k]?.includes(v);
+  for (const k in nodeEls) {
+    const g = nodeEls[k], lit = has("on", k) || has("done", k) || has("warn", k) || has("fail", k);
+    g.classList.toggle("dim", !lit);
+    for (const c of ["on", "warn", "fail"]) g.classList.toggle(c, has(c, k));
+  }
+  document.querySelectorAll(".edge").forEach(e => e.classList.toggle("on", has("edges", e.id)));
+  document.querySelectorAll(".write").forEach(w => {
+    w.classList.toggle("on", has("writes", w.id) || has("failWrites", w.id));
+    w.classList.toggle("fail", has("failWrites", w.id));
+  });
+
+  dyn.replaceChildren();
+  for (const [k, str, kind] of s.pills || []) {
+    const n = NODES[k], c = k === "spec" ? P(n.x - 1, n.y, 2.05, false) : P(n.x, n.y, NH, false);
+    pill(dyn, [c[0], c[1] - (k === "spec" ? 20 : 44)], str, kind);
+  }
+
+  renderRows(s.rows);
+  const m = [s.m[0], s.m[1], s.rows.length, s.m[2], s.m[3]];
+  ["t", "c", "r", "g", "x"].forEach((k, j) => {
+    const chip = $("mm-" + k);
+    chip.querySelector("b").textContent = m[j];
+    chip.classList.toggle("hot", prevM.length > 0 && prevM[j] !== m[j]);
+  });
+  prevM = m;
+
+  $("kicker").textContent = `STEP ${cur + 1} / ${STEPS.length}`;
+  $("tag").className = "tag " + s.tag[0]; $("tag").textContent = s.tag[1];
+  $("title").textContent = s.title;
+  bodies.forEach((b, j) => b.hidden = j !== cur);
+  $("pbody").scrollTop = 0;
+  $("tw").scrollTop = $("tw").scrollHeight;
+  $("back").disabled = cur === 0;
+  $("nextlbl").textContent = cur === STEPS.length - 1 ? "Start over" : `Next: ${STEPS[cur + 1].nav}`;
+  $("stepof").textContent = `Step ${cur + 1} of ${STEPS.length}`;
+  document.querySelectorAll(".st").forEach((b, j) => { b.classList.toggle("on", j === cur); b.classList.toggle("seen", j < cur); });
+  $("prog").style.width = (90 * cur / (STEPS.length - 1)) + "%";
+  document.querySelectorAll("#learn label").forEach(l => l.querySelector("input").checked = cur + 1 > +l.dataset.at);
+  history.replaceState(null, "", "#" + (cur + 1));
+}
+
+STEPS.forEach((s, i) => {
+  const b = el("button", ""); b.className = "st"; b.setAttribute("aria-label", `Step ${i + 1}: ${s.nav}`);
+  b.append(el("i", String(i + 1)), el("span", s.nav)); b.onclick = () => go(i);
+  $("steps").append(b);
+});
+$("back").onclick = () => go(cur - 1);
+$("next").onclick = () => go(cur + 1);
+document.addEventListener("keydown", e => { if (e.key === "ArrowRight") go(cur + 1); if (e.key === "ArrowLeft" && cur > 0) go(cur - 1); });
+go(Math.max(0, (parseInt(location.hash.slice(1)) || 1) - 1));
+</script>
+</body>
+</html>
